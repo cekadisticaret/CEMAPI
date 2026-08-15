@@ -27,7 +27,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 _DEFAULT_URL = "https://bursaapp.com/poly/api/mirror"
@@ -113,6 +113,9 @@ def _slot_window_ok(slot: dict, now_tr: datetime) -> tuple[bool, str]:
         day = datetime.strptime(str(slot_date), "%Y-%m-%d").date()
         start = datetime.combine(day, time(open_hm[0], open_hm[1]), tzinfo=_TZ_TR)
         end = datetime.combine(day, time(close_hm[0], close_hm[1]), tzinfo=_TZ_TR)
+        # 23:05–00:02 gibi gece yarısını geçen pencereler — kapanış ertesi güne taşınır
+        if end <= start:
+            end += timedelta(days=1)
         if now_tr < start:
             return False, f"henüz açılmadı (pencere {slot.get('slot_open_tr')})"
         if now_tr > end:
