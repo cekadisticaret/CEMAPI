@@ -1,0 +1,6 @@
+{
+  "coptc_live_amount_low": 12.0,
+  "coptc_live_amount_mid": 16.0,
+  "coptc_live_amount_high": 20.0,
+  "coptc_live_cold_hour_cut_enabled": false
+}

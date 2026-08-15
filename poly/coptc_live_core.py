@@ -1,0 +1,916 @@
+#!/usr/bin/env python3
+"""CoptC Live Control — gerçek PM çekirdeği (API mirror)."""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import shutil
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from coptc_pm_common import fetch_klines, sym_short, tg_send, try_pm_open
+
+_sym_short = sym_short
+_fetch_klines = fetch_klines
+from pm_trader_helpers import (
+    HOURLY_MIN_NET_PROFIT_RATIO,
+    pm_fetch_resolution,
+    pm_get_balance,
+    pm_live_amount_range_str,
+    pm_live_wr_amount,
+    pm_realized_pnl,
+    pm_sanal_slot_candle,
+    pm_tg_stake,
+    resolve_open_slot_gates,
+    resolve_slot_trade_amount,
+    skip_if_weekend_pause,
+    slot_amount_log,
+)
+from coptc_guard import can_open_trade, is_dashboard_live_open
+
+_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+if os.path.exists(_ENV_FILE):
+    with open(_ENV_FILE) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip())
+
+_TZ_TR = ZoneInfo("Europe/Istanbul")
+_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+@dataclass(frozen=True)
+class LiveSpec:
+    label: str
+    amount_system: str  # coptc_settings.json anahtarı (coptc_live_amount_*)
+    env_flag: str       # COPTC_LIVE_ENABLED
+    default_amount: float = 5.0
+    book_tag: str = "coptc_live"
+    algo_name: str = "API Mirror"
+    min_profit_ratio: float | None = None
+    mirror_book: str | None = None
+
+
+def book_tag(spec: LiveSpec) -> str:
+    return spec.book_tag
+
+
+def _paths(spec: LiveSpec) -> tuple[str, str, str]:
+    tag = book_tag(spec)
+    return (
+        os.path.join(_DIR, f"{tag}_state.json"),
+        os.path.join(_DIR, f"{tag}_history.json"),
+        os.path.join(_DIR, f"{tag}_polyhata.json"),
+    )
+
+
+def _pm_enabled(spec: LiveSpec) -> bool:
+    """Dashboard Live anahtarı tek otorite; .env bayrağı yedek (geriye uyumluluk)."""
+    if is_dashboard_live_open(spec.label):
+        return True
+    return os.getenv(spec.env_flag, "false").lower() in ("1", "true", "yes")
+
+
+def is_live_active(spec: LiveSpec) -> bool:
+    if not _pm_enabled(spec):
+        return False
+    return can_open_trade(spec.label, lambda t: tg_send(spec.label, t))
+
+
+def _sanal_state_path(_spec: LiveSpec) -> str:
+    return os.path.join(_DIR, "coptc_live_state.json")
+
+
+def _live_has_sanal_pos(live_state: dict, sanal_pos: dict) -> bool:
+    sym = sanal_pos.get("symbol")
+    slug = sanal_pos.get("pm_slug")
+    hour = sanal_pos.get("entry_hour_tr")
+    for p in live_state.get("open_positions") or []:
+        if p.get("symbol") != sym:
+            continue
+        if slug and p.get("pm_slug") == slug:
+            return True
+        if hour is not None and p.get("entry_hour_tr") == hour:
+            return True
+    return False
+
+
+def _read_json(path: str):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _atomic_write(path: str, data) -> None:
+    """Yarım yazılmış dosya = kayıp pozisyon = mükerrer emir; önce yedekle, sonra takas et."""
+    if os.path.exists(path):
+        with contextlib.suppress(OSError):
+            shutil.copyfile(path, f"{path}.bak")
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def load_state(spec: LiveSpec) -> dict:
+    """Bozuk state'i boş saymak açık pozisyonları görünmez yapar ve aynı slota
+    ikinci emir girilmesine yol açar — yedeğe düş, o da yoksa hata ver."""
+    sp, _, _ = _paths(spec)
+    if not os.path.exists(sp):
+        return {"balance": 0.0, "open_positions": [], "total_pnl": 0.0}
+    try:
+        return _read_json(sp)
+    except Exception as e:
+        bak = f"{sp}.bak"
+        if os.path.exists(bak):
+            try:
+                st = _read_json(bak)
+                print(f"[{spec.label}] state bozuk, yedekten okundu: {e}", file=sys.stderr)
+                return st
+            except Exception:
+                pass
+        raise RuntimeError(f"state okunamadı ve yedek yok ({sp}): {e}") from e
+
+
+def save_state(spec: LiveSpec, state: dict) -> None:
+    sp, _, _ = _paths(spec)
+    _atomic_write(sp, state)
+
+
+def load_history(spec: LiveSpec) -> list:
+    _, hp, _ = _paths(spec)
+    if os.path.exists(hp):
+        try:
+            return _read_json(hp)
+        except Exception:
+            bak = f"{hp}.bak"
+            if os.path.exists(bak):
+                with contextlib.suppress(Exception):
+                    return _read_json(bak)
+    return []
+
+
+def save_history(spec: LiveSpec, history: list) -> None:
+    _, hp, _ = _paths(spec)
+    _atomic_write(hp, history)
+
+
+def _wr(wins: int, total: int) -> str:
+    return f"%{wins / total * 100:.0f} ({wins}/{total})" if total else "veri yok"
+
+
+def get_symbol_stats(history: list, symbol: str) -> tuple[int, int]:
+    trades = [t for t in history if t.get("symbol") == symbol]
+    return sum(1 for t in trades if t.get("win")), len(trades)
+
+
+def get_stats(history: list, symbol: str, hour_tr: int) -> tuple[int, int]:
+    trades = [
+        t for t in history
+        if t.get("symbol") == symbol and t.get("entry_hour_tr") == hour_tr
+    ]
+    return sum(1 for t in trades if t.get("win")), len(trades)
+
+
+def _trade_amount(spec: LiveSpec, history: list, symbol: str) -> float:
+    return pm_live_wr_amount(spec.amount_system, history, symbol, get_symbol_stats)
+
+
+def _pm_bal_line() -> str:
+    bal = pm_get_balance()
+    return f"💰 PM Bakiye: ${bal:.2f}" if bal >= 0 else "💰 PM Bakiye: ?"
+
+
+def _resolve_pm(pos: dict, *, now_hour: int):
+    """PM sonuç — slot bitmişse gevşek eşik, o da yoksa Binance mum yedeği.
+
+    Gamma bazen saat bitince uzun süre mid-price (örn. 0.75) tutuyor;
+    closed=False iken 0.99 eşiği hiç geçmiyor. Slot bitmişse:
+      1) 0.90 eşiği
+      2) Binance 1h slot mumu (sanal settle ile aynı) — defteri kilitlemez
+    """
+    slug = pos.get("pm_slug")
+    if not slug:
+        return None
+    res = pm_fetch_resolution(slug)
+    if res is not None:
+        return res
+    entry_h = pos.get("entry_hour_tr")
+    slot_ended = entry_h is not None and int(entry_h) != int(now_hour)
+    if not slot_ended:
+        return None
+    res = pm_fetch_resolution(slug, min_decisive=0.90)
+    if res is not None:
+        return res
+    candle = pm_sanal_slot_candle(pos.get("symbol") or "", pos.get("entry_time_tr") or "")
+    if not candle:
+        return None
+    hour_open, hour_close = candle
+    up_won = hour_close >= hour_open
+    print(
+        f"[A2 live] {pos.get('symbol')} PM kesin değil → Binance yedek "
+        f"{'UP' if up_won else 'DOWN'} ({hour_open:.2f}→{hour_close:.2f})"
+    )
+    return {
+        "up_won": up_won,
+        "closed": False,
+        "up_price": 1.0 if up_won else 0.0,
+        "down_price": 0.0 if up_won else 1.0,
+        "title": "binance_fallback",
+        "source": "binance_slot",
+    }
+
+
+async def run_close(spec: LiveSpec) -> None:
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    if skip_if_weekend_pause(spec.label, "close", now_tr):
+        return
+    state = load_state(spec)
+    history = load_history(spec)
+    if not state["open_positions"]:
+        print(f"[{spec.label} close] açık pozisyon yok")
+        return
+
+    lines = []
+    pending = []
+    tur_pnl = 0.0
+    failed = []
+    for pos in list(state["open_positions"]):
+        sym = pos["symbol"]
+        klines = await _fetch_klines(sym, "1h", 2)
+        if not klines:
+            failed.append(pos)
+            pending.append(f"{_sym_short(sym)} (kline yok)")
+            continue
+        current_price = klines[-1]["close"]
+        entry = pos["entry_price"]
+        pred = pos["predicted_dir"]
+        amount = pos.get("amount", spec.default_amount)
+        has_pm = bool(pos.get("pm_slug") and pos.get("pm_order_id"))
+        if has_pm:
+            res = _resolve_pm(pos, now_hour=now_tr.hour)
+            if res is None:
+                failed.append(pos)
+                pending.append(
+                    f"{_sym_short(sym)} h={pos.get('entry_hour_tr')} "
+                    f"(PM sonuç henüz kesin değil)"
+                )
+                continue
+            token_dir = pos.get("pm_token_dir") or pred
+            win = (token_dir == "UP" and res["up_won"]) or (token_dir == "DOWN" and not res["up_won"])
+            actual = "UP" if res["up_won"] else "DOWN"
+            pnl = pm_realized_pnl(pos, win)
+            settle_src = res.get("source") or "pm"
+        else:
+            actual = "UP" if current_price >= entry else "DOWN"
+            win = pred == actual
+            pm_spent = float(pos.get("pm_spent") or amount)
+            pm_size = float(pos.get("pm_size") or 0)
+            pnl = round(pm_size - pm_spent, 2) if win and pm_size else round(-pm_spent, 2)
+            settle_src = "no_pm"
+        tur_pnl += pnl
+        state["total_pnl"] = round(state.get("total_pnl", 0.0) + pnl, 2)
+        history.append({
+            "symbol": sym,
+            "predicted_dir": pred,
+            "actual_dir": actual,
+            "win": win,
+            "entry_price": entry,
+            "exit_price": current_price,
+            "entry_time_tr": pos["entry_time_tr"],
+            "entry_hour_tr": pos.get("entry_hour_tr"),
+            "entry_dow": pos.get("entry_dow"),
+            "amount": amount,
+            "pnl": pnl,
+            "pm_live": True,
+            "exit_time_tr": now_tr.isoformat(),
+            "pm_spent": pos.get("pm_spent"),
+            "pm_size": pos.get("pm_size"),
+            "pm_slug": pos.get("pm_slug"),
+            "algo_name": pos.get("algo_name", spec.algo_name),
+            "algo_num": 0,
+            "settle_source": settle_src if has_pm else "no_pm",
+        })
+        name = _sym_short(sym)
+        lines.append(f"{'✅' if win else '❌'} {name}  {pred}  net {'+' if pnl >= 0 else ''}{pnl:.2f}$")
+
+    state["open_positions"] = failed
+    save_state(spec, state)
+    save_history(spec, history)
+    if pending:
+        print(f"[{spec.label} close] {len(pending)} pozisyon bekliyor: {', '.join(pending)}")
+    if not lines:
+        return
+    print(f"[{spec.label} close] {len(lines)} pozisyon kapatıldı")
+    closed = len(history)
+    wins = sum(1 for t in history if t["win"])
+    genel = f"%{wins / closed * 100:.0f}" if closed else "—"
+    sep = "━" * 26
+    tg_send(
+        spec.label,
+        f"{sep}\n🏁 <b>{spec.label} — Sonuçlar</b>  🔴 GERÇEK PM\n"
+        + "\n".join(lines)
+        + f"\nBu tur: {'+' if tur_pnl >= 0 else ''}{tur_pnl:.2f}$  |  {_pm_bal_line()}\n"
+        f"Genel: {genel} ({closed} işlem)\n{sep}",
+    )
+    try:
+        from pm_trader_helpers import pm_cash_out_pending
+        open_ids = {
+            str(p["pm_token_id"]) for p in state.get("open_positions") or []
+            if p.get("pm_token_id")
+        }
+        pm_cash_out_pending(label=spec.label, open_token_ids=open_ids, wait=True)
+    except Exception as e:
+        print(f"[{spec.label} close] cash-out: {e}", file=sys.stderr)
+
+
+def run_manual_close(spec: LiveSpec, symbols: list[str] | None = None) -> dict:
+    """Açık live pozisyonları piyasa fiyatından sat — sonucu beklemeden kapat."""
+    import pm_trader_helpers as pmh
+    from pm_trader_helpers import pm_sell_position
+
+    pmh.PM_DRY_RUN = False   # bu defterdeki pozisyonlar zaten gerçek PM
+
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    state = load_state(spec)
+    history = load_history(spec)
+    opens = state.get("open_positions") or []
+    if not opens:
+        print(f"[{spec.label} manuel] açık pozisyon yok")
+        return {"closed": 0, "failed": 0, "pnl": 0.0}
+
+    want = {s.upper() for s in symbols} if symbols else None
+    kalan, lines = [], []
+    closed = failed = 0
+    tur_pnl = 0.0
+
+    for pos in opens:
+        sym = pos.get("symbol") or ""
+        token_id = pos.get("pm_token_id")
+        if (want and sym.upper() not in want and _sym_short(sym).upper() not in want) or not token_id:
+            kalan.append(pos)
+            continue
+
+        # size=None → zincirdeki gerçek bakiye satılır; dolum kayıttan biraz
+        # fazla share verdiyse artık dust kalmasın.
+        res = pm_sell_position(token_id, None, label=spec.label)
+        if not res:
+            failed += 1
+            kalan.append(pos)
+            print(f"[{spec.label} manuel] {_sym_short(sym)} satılamadı", file=sys.stderr)
+            continue
+
+        spent = float(pos.get("pm_spent") or pos.get("amount") or 0)
+        proceeds = float(res["proceeds"])
+        pnl = round(proceeds - spent, 2)
+        tur_pnl += pnl
+        closed += 1
+        state["total_pnl"] = round(state.get("total_pnl", 0.0) + pnl, 2)
+        history.append({
+            "symbol": sym,
+            "predicted_dir": pos.get("predicted_dir"),
+            "actual_dir": "MANUEL",
+            "win": pnl > 0,
+            "entry_price": pos.get("entry_price"),
+            "entry_time_tr": pos.get("entry_time_tr"),
+            "entry_hour_tr": pos.get("entry_hour_tr"),
+            "entry_dow": pos.get("entry_dow"),
+            "amount": pos.get("amount"),
+            "pnl": pnl,
+            "pm_live": True,
+            "manual_close": True,
+            "exit_time_tr": now_tr.isoformat(),
+            "pm_spent": spent,
+            "pm_size": pos.get("pm_size"),
+            "pm_exit_price": res["price"],
+            "pm_proceeds": proceeds,
+            "pm_slug": pos.get("pm_slug"),
+            "algo_name": pos.get("algo_name", spec.algo_name),
+            "algo_num": 0,
+            "settle_source": "manual_sell",
+        })
+        lines.append(
+            f"{'✅' if pnl >= 0 else '❌'} {_sym_short(sym)}  {res['size']} share "
+            f"@ {res['price']:.2f} → ${proceeds:.2f}  ({'+' if pnl >= 0 else ''}{pnl:.2f}$)"
+        )
+        print(f"[{spec.label} manuel] {_sym_short(sym)} kapatıldı: {pnl:+.2f}$")
+
+    state["open_positions"] = kalan
+    save_state(spec, state)
+    save_history(spec, history)
+
+    if lines:
+        sep = "━" * 26
+        tg_send(
+            spec.label,
+            f"{sep}\n✋ <b>{spec.label} — Manuel Kapatma</b>  🔴 GERÇEK PM\n"
+            + "\n".join(lines)
+            + f"\nBu tur: {'+' if tur_pnl >= 0 else ''}{tur_pnl:.2f}$  |  {_pm_bal_line()}\n{sep}",
+        )
+    return {"closed": closed, "failed": failed, "pnl": round(tur_pnl, 2)}
+
+
+async def mirror_open_from_sanal(
+    spec: LiveSpec,
+    sanal_pos: dict,
+    *,
+    entry_price: float,
+    now_tr: datetime | None = None,
+) -> tuple[dict | None, str | None]:
+    """Sanal pozisyon → gerçek PM (aynı sembol, yön, slot)."""
+    if not is_live_active(spec):
+        return None, "inactive"
+
+    sym = sanal_pos.get("symbol") or ""
+    direction = (sanal_pos.get("predicted_dir") or sanal_pos.get("pm_token_dir") or "").upper()
+    if not sym or direction not in ("UP", "DOWN"):
+        return None, "bad_pos"
+    if entry_price <= 0:
+        return None, "bad_entry"
+
+    if now_tr is None:
+        now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    now = datetime.now(timezone.utc)
+
+    state = load_state(spec)
+    if _live_has_sanal_pos(state, sanal_pos):
+        return None, "exists"
+
+    history = load_history(spec)
+    hour_tr = int(sanal_pos.get("entry_hour_tr", now_tr.hour))
+    dow = int(sanal_pos.get("entry_dow", now_tr.weekday()))
+    is_weekend = bool(sanal_pos.get("entry_is_weekend", dow >= 5))
+
+    base = _trade_amount(spec, history, sym)
+    amount, hot_boost, cold_cut = resolve_slot_trade_amount(base, hour_tr, history)
+    slot_amount_log(spec.label, hour_tr, base, amount, hot_boost, cold_cut)
+    _, _, hata = _paths(spec)
+
+    pos, err = try_pm_open(
+        state,
+        label=spec.label,
+        hata_file=hata,
+        sym=sym,
+        direction=direction,
+        entry_price=entry_price,
+        hour_tr=hour_tr,
+        dow=dow,
+        is_weekend=is_weekend,
+        now_tr=now_tr,
+        now=now,
+        extra={
+            "algo_name": spec.algo_name,
+            "algo_num": 0,
+            "algo_signal": direction,
+            "hot_hour_boost": hot_boost,
+            "cold_hour_cut": cold_cut,
+            "mirrored_from_sanal": True,
+            "sanal_pm_slug": sanal_pos.get("pm_slug"),
+        },
+        amount=amount,
+        pm_live=True,
+        min_profit_ratio=spec.min_profit_ratio,
+    )
+    if pos:
+        save_state(spec, state)
+        name = _sym_short(sym)
+        print(
+            f"[{spec.label} mirror] {name} {direction} ${amount:.2f} "
+            f"(kaynak API aynası)"
+        )
+    return pos, err
+
+
+async def sync_open_from_sanal_state(spec: LiveSpec) -> list[tuple[str, str, float, dict]]:
+    """Sanal defterdeki tüm açık pozisyonları live'a yansıt."""
+    if not is_live_active(spec):
+        print(f"[{spec.label} sync] live kapalı — atlandı")
+        return []
+
+    spath = _sanal_state_path(spec)
+    if not os.path.exists(spath):
+        return []
+    try:
+        with open(spath, encoding="utf-8") as f:
+            sanal_state = json.load(f)
+    except Exception:
+        return []
+
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    opened: list[tuple[str, str, float, dict]] = []
+    for sanal_pos in sanal_state.get("open_positions") or []:
+        entry_price = float(sanal_pos.get("entry_price") or 0)
+        if entry_price <= 0:
+            continue
+        pos, err = await mirror_open_from_sanal(
+            spec, sanal_pos, entry_price=entry_price, now_tr=now_tr,
+        )
+        if pos:
+            sym = sanal_pos["symbol"]
+            direction = (sanal_pos.get("predicted_dir") or "").upper()
+            opened.append((sym, direction, entry_price, pos))
+        elif err and err not in ("exists", "inactive"):
+            print(f"[{spec.label} sync] {sanal_pos.get('symbol')} — {err}")
+    return opened
+
+
+def _load_signal_module(spec: LiveSpec):
+    if not spec.signal_module:
+        return None
+    import importlib
+    return importlib.import_module(spec.signal_module)
+
+
+def _live_has_symbol_slot(state: dict, sym: str, hour_tr: int) -> bool:
+    for p in state.get("open_positions") or []:
+        if p.get("symbol") == sym and p.get("entry_hour_tr") == hour_tr:
+            return True
+    return False
+
+
+def _has_token_position(state: dict, token_id: str) -> bool:
+    return any(
+        str(p.get("pm_token_id") or "") == str(token_id)
+        for p in state.get("open_positions") or []
+    )
+
+
+def _already_on_chain(pmh, token_id: str) -> bool:
+    """State dosyası kaybolsa bile aynı token'a ikinci emir girilmesin —
+    zincirdeki share son söz. Okunamazsa engelleme (False)."""
+    try:
+        return pmh.pm_conditional_shares(token_id) >= 0.5
+    except Exception:
+        return False
+
+
+def mirror_book_key(spec: LiveSpec) -> str:
+    """Panelden seçilen kaynak defter — seçim yoksa spec'teki/kendi defteri."""
+    ctrl = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "coptc_control.json")
+    try:
+        with open(ctrl, encoding="utf-8") as f:
+            picked = json.load(f).get("coptc_mirror_book")
+        if picked:
+            return str(picked)
+    except Exception:
+        pass
+    return spec.mirror_book or "a2_05"
+
+
+def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
+    """Kaynak sunucudaki defteri birebir kopyala — yön yerelde hesaplanmaz.
+
+    dry=True: emir gönderilmez, state yazılmaz — sadece ne yapılacağı basılır.
+    """
+    import coptc_mirror as ms
+    import pm_trader_helpers as pmh
+
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    if skip_if_weekend_pause(spec.label, "open", now_tr):
+        return
+    if not is_live_active(spec):
+        print(f"[{spec.label} mirror] live kapalı — atlandı")
+        return
+    if not ms.enabled():
+        print(f"[{spec.label} mirror] MIRROR_API_TOKEN yok — atlandı")
+        return
+
+    book = mirror_book_key(spec)
+    hour_tr = now_tr.hour
+    try:
+        remote, skipped, meta = ms.open_positions_with_meta(
+            book, expected_hour_tr=hour_tr, now_tr=now_tr,
+        )
+    except Exception as e:
+        print(f"[{spec.label} mirror] kaynak okunamadı: {e}", file=sys.stderr)
+        return
+    slot = ms.active_slot(meta)
+    pred = ms.slot_prediction_label(meta, hour_tr)
+    window = slot.get("slot_tr") or f"{slot.get('slot_open_tr', '?')}-{slot.get('slot_close_tr', '?')}"
+    print(
+        f"[{spec.label} mirror] {now_tr:%H:%M} · tahmin {pred} · pencere {window} · kaynak {book}",
+        flush=True,
+    )
+    if slot.get("status") and str(slot["status"]).lower() != "active":
+        print(f"[{spec.label} mirror] slot durumu: {slot.get('status')}", flush=True)
+    for note in skipped:
+        print(f"[{spec.label} mirror] atlandı — {note}")
+    if not remote:
+        print(f"[{spec.label} mirror] {pred} — kaynakta kopyalanacak pozisyon yok")
+        return
+    history = load_history(spec)
+    state = load_state(spec)
+    _, _, hata = _paths(spec)
+    pmh.PM_DRY_RUN = False
+
+    opened: list[tuple[str, str, float, dict]] = []
+    for p in remote:
+        sym = p.get("symbol_raw") or f"{p.get('symbol')}USDT"
+        direction = str(p.get("dir") or "").upper()
+        if direction not in ("UP", "DOWN"):
+            continue
+        if _live_has_symbol_slot(state, sym, hour_tr):
+            continue
+
+        base = _trade_amount(spec, history, sym)
+        _sk, amount, hot_boost, cold_cut, gate_note = resolve_open_slot_gates(
+            history, hour_tr, base
+        )
+        if _sk:
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — slot kapısı")
+            continue
+        slot_amount_log(spec.label, hour_tr, base, amount, hot_boost, cold_cut)
+
+        token_id = str(p["pm_token_id"])
+        if _has_token_position(state, token_id):
+            continue
+        if not dry and _already_on_chain(pmh, token_id):
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — zincirde zaten pozisyon var, atlandı")
+            continue
+        guards = ms.order_guards(p, amount, meta)
+        if guards is None:
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — kaynak fiyat sınırı "
+                  "göndermedi, emir açılmadı", file=sys.stderr)
+            continue
+        # Borsa 5 share minimumu: bahsimiz kaynağın verdiği alt sınırın altındaysa
+        # maliyet niyeti aşacak ve emir zaten max_spend'e takılacak.
+        min_stake = p.get("min_stake_usd")
+        if min_stake and amount < float(min_stake):
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — bahis ${amount:.2f} < "
+                  f"kaynağın alt sınırı ${float(min_stake):.2f}, emir açılmadı")
+            continue
+        if dry:
+            print(f"[{spec.label} mirror·DRY] {_sym_short(sym)} {direction} ${amount:.2f} "
+                  f"token {token_id[:12]}… kaynak {p.get('pm_entry_price')} "
+                  f"şimdi {p.get('pm_price_now')} — emir GÖNDERİLMEDİ")
+            continue
+        order = pmh.pm_place_order(
+            token_id, amount, str(p.get("pm_tick_size") or "0.01"),
+            bool(p.get("pm_neg_risk")), label=spec.label, hata_file=hata,
+            **guards,
+        )
+        if not order:
+            reason = getattr(pmh, "_PM_LAST_ORDER_ERROR", None)
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — açılmadı"
+                  + (f": {reason}" if reason else " (order başarısız)"), file=sys.stderr)
+            continue
+
+        entry_price = float(p.get("spot_entry") or 0)
+        pos = {
+            "symbol": sym,
+            "predicted_dir": direction,
+            "entry_price": entry_price,
+            "entry_time_tr": now_tr.isoformat(),
+            "entry_hour_tr": hour_tr,
+            "entry_dow": now_tr.weekday(),
+            "entry_is_weekend": now_tr.weekday() >= 5,
+            "amount": amount,
+            "algo_name": p.get("algo_name") or spec.algo_name,
+            "algo_num": 0,
+            "algo_signal": direction,
+            "hot_hour_boost": hot_boost,
+            "cold_hour_cut": cold_cut,
+            "mirrored_from_source": book,
+            "source_position_id": p.get("position_id"),
+            "prediction_tr": p.get("prediction_tr") or slot.get("prediction_tr"),
+            "slot_tr": p.get("slot_tr") or slot.get("slot_tr"),
+            "source_entry_price": p.get("pm_entry_price"),
+            "source_price_now": p.get("pm_price_now"),
+            "pm_slug": p.get("pm_slug"),
+            "pm_title": p.get("pm_title", ""),
+            "pm_token_id": token_id,
+            "pm_token_dir": direction,
+            "pm_size": order["size"],
+            "pm_entry_price": order["price"],
+            "pm_order_id": order["order_id"],
+            "pm_spent": order["spent"],
+            "pm_live": True,
+        }
+        state["open_positions"].append(pos)
+        # Para harcandı — tur burada kesilse bile kayıt kalsın, yoksa sonraki
+        # poll turu aynı sembolü ikinci kez açar.
+        save_state(spec, state)
+        opened.append((sym, direction, entry_price, pos))
+        print(f"[{spec.label} mirror] {_sym_short(sym)} {direction} ${amount:.2f} "
+              f"← kaynak {p.get('pm_entry_price')} / bizim {order['price']}")
+
+    if not opened:
+        print(f"[{spec.label} mirror] {now_tr:%H:%M} — açılan yok")
+        return
+
+    save_state(spec, state)
+    sep = "━" * 26
+    lines = []
+    for sym, direction, entry_price, pos in opened:
+        dir_icon = "📈" if direction == "UP" else "📉"
+        pm_line = pm_tg_stake(pos) or f"💵 ${pos.get('amount', spec.default_amount):.0f}"
+        lines.append(
+            f"{dir_icon} <b>{_sym_short(sym)}</b>  {direction}  🪞 kaynak aynası\n   {pm_line}"
+        )
+    tg_send(
+        spec.label,
+        f"{sep}\n🪞 <b>{spec.label} — {now_tr:%H:%M} MIRROR</b>  🔴 GERÇEK PM\n"
+        + "\n".join(lines)
+        + f"\n(kaynak defter: {book})\n{sep}\n{_pm_bal_line()}\n{sep}",
+    )
+    print(f"[{spec.label} mirror] {len(opened)} açıldı (kaynak {book})")
+
+
+async def run_open_direct(spec: LiveSpec) -> None:
+    """Live açıkken sanal yok — motor sinyalini doğrudan PM'e gönder."""
+    mod = _load_signal_module(spec)
+    if mod is None:
+        print(f"[{spec.label} direct] signal_module yok — mirror'a düş")
+        await run_open(spec)
+        return
+
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    if skip_if_weekend_pause(spec.label, "open", now_tr):
+        return
+    if not is_live_active(spec):
+        print(f"[{spec.label} direct] live kapalı — atlandı")
+        return
+
+    hour_tr = now_tr.hour
+    dow = now_tr.weekday()
+    is_weekend = dow >= 5
+    now = datetime.now(timezone.utc)
+    saat = now_tr.strftime("%H:%M")
+    history = load_history(spec)
+    state = load_state(spec)
+
+    cold_skip, _, _, _, cold_note = resolve_open_slot_gates(history, hour_tr, 0)
+    if cold_skip:
+        print(f"[{spec.label} direct] {saat} — {cold_note} · işlem yok")
+        return
+
+    symbols = getattr(mod, "SYMBOLS", [])
+    resolve = getattr(mod, "resolve_live_signal", None)
+    if not symbols or resolve is None:
+        print(f"[{spec.label} direct] {spec.signal_module} eksik SYMBOLS/resolve")
+        return
+
+    _, _, hata = _paths(spec)
+    opened: list[tuple[str, str, float, dict]] = []
+
+    for sym in symbols:
+        direction, price, algo_name = await resolve(sym)
+        if direction is None:
+            continue
+        if _live_has_symbol_slot(state, sym, hour_tr):
+            continue
+        try:
+            klines = await _fetch_klines(sym, "1h", 3)
+            entry_price = klines[-2]["close"] if klines and len(klines) >= 2 else price
+        except Exception:
+            entry_price = price
+        if not entry_price or float(entry_price) <= 0:
+            continue
+
+        base = _trade_amount(spec, history, sym)
+        _sk, amount, hot_boost, cold_cut, gate_note = resolve_open_slot_gates(
+            history, hour_tr, base
+        )
+        if _sk:
+            print(f"[{spec.label} direct] {sym} — slot kapısı")
+            continue
+        if gate_note and hot_boost:
+            print(f"[{spec.label} direct] 🔥 {gate_note}")
+        else:
+            slot_amount_log(spec.label, hour_tr, base, amount, hot_boost, cold_cut)
+
+        pos, err = try_pm_open(
+            state,
+            label=spec.label,
+            hata_file=hata,
+            sym=sym,
+            direction=direction,
+            entry_price=float(entry_price),
+            hour_tr=hour_tr,
+            dow=dow,
+            is_weekend=is_weekend,
+            now_tr=now_tr,
+            now=now,
+            extra={
+                "algo_name": algo_name or spec.algo_name,
+                "algo_num": 0,
+                "algo_signal": direction,
+                "hot_hour_boost": hot_boost,
+                "cold_hour_cut": cold_cut,
+                "direct_signal": True,
+            },
+            amount=amount,
+            pm_live=True,
+            min_profit_ratio=spec.min_profit_ratio,
+        )
+        if pos:
+            opened.append((sym, direction, float(entry_price), pos))
+            print(f"[{spec.label} direct] {_sym_short(sym)} {direction} ${amount:.2f}")
+        elif err and err not in ("exists",):
+            print(f"[{spec.label} direct] {_sym_short(sym)} — {err}")
+
+    if opened:
+        save_state(spec, state)
+
+    if not opened:
+        print(f"[{spec.label} direct] {saat} — açılan yok")
+        return
+
+    next_h = f"{(hour_tr + 1) % 24:02d}:00"
+    lines = []
+    for sym, direction, entry_price, pos in opened:
+        name = _sym_short(sym)
+        dir_icon = "📈" if direction == "UP" else "📉"
+        hw, ht = get_stats(history, sym, hour_tr)
+        sw, st = get_symbol_stats(history, sym)
+        pm_line = pm_tg_stake(pos) or f"💵 ${pos.get('amount', spec.default_amount):.0f}"
+        lines.append(
+            f"{dir_icon} <b>{name}</b>  {direction}  📊 {spec.algo_name}  giriş:{entry_price:.2f}\n"
+            f"   {pm_line}\n   🕐 {_wr(hw, ht)}  |  genel: {_wr(sw, st)}"
+        )
+    sep = "━" * 26
+    tg_send(
+        spec.label,
+        f"{sep}\n🆕 <b>{spec.label} — {saat}-{next_h}</b>  🔴 GERÇEK PM (doğrudan)\n"
+        f"{pm_live_amount_range_str(spec.amount_system)}\n"
+        + "\n".join(lines)
+        + f"\n{sep}\n{_pm_bal_line()}\n{sep}",
+    )
+    print(f"[{spec.label} direct] {len(opened)} açıldı")
+
+
+async def run_open(spec: LiveSpec) -> None:
+    """Live open — sanal defterle senkron (bağımsız sinyal yok)."""
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    if skip_if_weekend_pause(spec.label, "open", now_tr):
+        return
+    if not _pm_enabled(spec):
+        print(f"[{spec.label} open] dashboard kapalı ({spec.amount_system}) — atlandı")
+        return
+
+    saat = now_tr.strftime("%H:%M")
+    hour_tr = now_tr.hour
+    history = load_history(spec)
+    opened = await sync_open_from_sanal_state(spec)
+
+    if not opened:
+        sanal_n = 0
+        spath = _sanal_state_path(spec)
+        if os.path.exists(spath):
+            try:
+                with open(spath, encoding="utf-8") as f:
+                    sanal_n = len(json.load(f).get("open_positions") or [])
+            except Exception:
+                pass
+        print(
+            f"[{spec.label} open] {saat} — live açılan yok"
+            + (f" (sanal {sanal_n} açık)" if sanal_n else "")
+        )
+        return
+
+    next_h = f"{(hour_tr + 1) % 24:02d}:00"
+    lines = []
+    for sym, direction, entry_price, pos in opened:
+        name = _sym_short(sym)
+        dir_icon = "📈" if direction == "UP" else "📉"
+        hw, ht = get_stats(history, sym, hour_tr)
+        sw, st = get_symbol_stats(history, sym)
+        pm_line = pm_tg_stake(pos) or f"💵 ${pos.get('amount', spec.default_amount):.0f}"
+        lines.append(
+            f"{dir_icon} <b>{name}</b>  {direction}  📊 {spec.algo_name}  giriş:{entry_price:.2f}\n"
+            f"   {pm_line}\n   🕐 {_wr(hw, ht)}  |  genel: {_wr(sw, st)}"
+        )
+    sep = "━" * 26
+    tg_send(
+        spec.label,
+        f"{sep}\n🆕 <b>{spec.label} — {saat}-{next_h}</b>  🔴 GERÇEK PM  "
+        f"{pm_live_amount_range_str(spec.amount_system)}\n"
+        + "\n".join(lines)
+        + f"\n(kaynak API aynası)\n"
+        + f"{sep}\n{_pm_bal_line()}\n{sep}",
+    )
+    print(f"[{spec.label} open] {len(opened)} açıldı (sanal sync)")
+
+
+def main(spec: LiveSpec) -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else "mirror"
+    if mode == "close":
+        asyncio.run(run_close(spec))
+    elif mode == "manual-close":
+        run_manual_close(spec, sys.argv[2:] or None)
+    elif mode == "mirror":
+        run_open_mirror(spec, dry="--dry" in sys.argv[2:])
+    else:
+        print(f"[{spec.label}] yalnızca close | mirror | manual-close — '{mode}' yok (yerel algo kaldırıldı)",
+              file=sys.stderr)
+        sys.exit(2)
