@@ -416,7 +416,10 @@ def run_manual_close(spec: LiveSpec, symbols: list[str] | None = None) -> dict:
             + "\n".join(lines)
             + f"\nBu tur: {'+' if tur_pnl >= 0 else ''}{tur_pnl:.2f}$  |  {_pm_bal_line()}\n{sep}",
         )
-    return {"closed": closed, "failed": failed, "pnl": round(tur_pnl, 2)}
+    out = {"closed": closed, "failed": failed, "pnl": round(tur_pnl, 2)}
+    if failed:
+        out["error"] = pmh.pm_last_order_error()
+    return out
 
 
 async def mirror_open_from_sanal(
@@ -530,41 +533,87 @@ def _load_signal_module(spec: LiveSpec):
     return importlib.import_module(spec.signal_module)
 
 
-def _live_has_symbol_slot(state: dict, sym: str, hour_tr: int) -> bool:
+def _live_has_symbol_slot(state: dict, sym: str, hour_tr: int,
+                          *, source: str | None = None) -> bool:
+    """Bu sembol+saat zaten açık mı.
+
+    source verilirse yalnızca o kaynak defterin açtığı pozisyona bakılır;
+    farklı algoritmalar aynı sembolde ayrı pozisyon açabilsin diye.
+    """
     for p in state.get("open_positions") or []:
-        if p.get("symbol") == sym and p.get("entry_hour_tr") == hour_tr:
+        if p.get("symbol") != sym or p.get("entry_hour_tr") != hour_tr:
+            continue
+        if source is None or str(p.get("mirrored_from_source") or "") == str(source):
             return True
     return False
 
 
-def _has_token_position(state: dict, token_id: str) -> bool:
-    return any(
-        str(p.get("pm_token_id") or "") == str(token_id)
-        for p in state.get("open_positions") or []
-    )
+def _has_token_position(state: dict, token_id: str,
+                        *, source: str | None = None) -> bool:
+    for p in state.get("open_positions") or []:
+        if str(p.get("pm_token_id") or "") != str(token_id):
+            continue
+        if source is None or str(p.get("mirrored_from_source") or "") == str(source):
+            return True
+    return False
 
 
-def _already_on_chain(pmh, token_id: str) -> bool:
-    """State dosyası kaybolsa bile aynı token'a ikinci emir girilmesin —
-    zincirdeki share son söz. Okunamazsa engelleme (False)."""
+def _recorded_shares(state: dict, token_id: str) -> float:
+    """Defterde bu token için kayıtlı toplam share (tüm kaynaklar)."""
+    total = 0.0
+    for p in state.get("open_positions") or []:
+        if str(p.get("pm_token_id") or "") == str(token_id):
+            try:
+                total += float(p.get("pm_size") or 0)
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
+def _unrecorded_on_chain(pmh, state: dict, token_id: str) -> bool:
+    """Zincirde defterin bilmediği share var mı.
+
+    Emir gidip defter yazılamadan süreç ölmüşse (subprocess timeout) aynı
+    tokena ikinci emir gitmemeli. Ama birden fazla algoritma aynı tokenı
+    kasıtlı olarak üst üste alabildiği için mutlak bakiyeye bakılamaz;
+    zincirdeki share defterde yazan toplamı aşıyorsa kayıt dışı emir var
+    demektir. Okunamazsa engelleme (False).
+    """
     try:
-        return pmh.pm_conditional_shares(token_id) >= 0.5
+        held = pmh.pm_conditional_shares(token_id)
     except Exception:
         return False
+    return held >= _recorded_shares(state, token_id) + 0.5
 
 
-def mirror_book_key(spec: LiveSpec) -> str:
-    """Panelden seçilen kaynak defter — seçim yoksa spec'teki/kendi defteri."""
+def mirror_book_keys(spec: LiveSpec) -> list[str]:
+    """Panelden seçilen kaynak defterler — seçim yoksa spec'teki/kendi defteri."""
     ctrl = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "coptc_control.json")
     try:
         with open(ctrl, encoding="utf-8") as f:
-            picked = json.load(f).get("coptc_mirror_book")
+            data = json.load(f)
+        from coptc_guard import mirror_books_selected
+        picked = mirror_books_selected(data)
         if picked:
-            return str(picked)
+            return picked
     except Exception:
         pass
-    return spec.mirror_book or "a2_05"
+    return [spec.mirror_book or "a2_05"]
+
+
+def _order_books_by_wr(books: list[str]) -> list[str]:
+    """Önceliği win rate belirler — çakışmada önce yüksek WR'li işlenir,
+    bakiye biterse elenen düşük WR'li olur. WR okunamazsa seçim sırası kalır.
+    """
+    if len(books) < 2:
+        return books
+    try:
+        import coptc_mirror as ms
+        wr = {b.get("book"): b.get("wr") for b in ms.book_list() if b.get("book")}
+    except Exception:
+        return books
+    return sorted(books, key=lambda b: (wr.get(b) is None, -(wr.get(b) or 0.0)))
 
 
 def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
@@ -585,41 +634,71 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
         print(f"[{spec.label} mirror] MIRROR_API_TOKEN yok — atlandı")
         return
 
-    book = mirror_book_key(spec)
+    books = _order_books_by_wr(mirror_book_keys(spec))
     hour_tr = now_tr.hour
-    try:
-        remote, skipped, meta = ms.open_positions_with_meta(
-            book, expected_hour_tr=hour_tr, now_tr=now_tr,
+
+    # Önce tüm kaynaklar okunur; emir göndermeden önce sembol bazında
+    # çelişki var mı bakılacak.
+    by_symbol: dict[str, list[tuple[str, dict, dict]]] = {}
+    for book in books:
+        try:
+            remote, skipped, meta = ms.open_positions_with_meta(
+                book, expected_hour_tr=hour_tr, now_tr=now_tr,
+            )
+        except Exception as e:
+            print(f"[{spec.label} mirror] {book} okunamadı: {e}", file=sys.stderr)
+            continue
+        slot = ms.active_slot(meta)
+        pred = ms.slot_prediction_label(meta, hour_tr)
+        window = slot.get("slot_tr") or f"{slot.get('slot_open_tr', '?')}-{slot.get('slot_close_tr', '?')}"
+        print(
+            f"[{spec.label} mirror] {now_tr:%H:%M} · tahmin {pred} · pencere {window} · kaynak {book}",
+            flush=True,
         )
-    except Exception as e:
-        print(f"[{spec.label} mirror] kaynak okunamadı: {e}", file=sys.stderr)
+        if slot.get("status") and str(slot["status"]).lower() != "active":
+            print(f"[{spec.label} mirror] {book} slot durumu: {slot.get('status')}", flush=True)
+        for note in skipped:
+            print(f"[{spec.label} mirror] {book} atlandı — {note}")
+        for p in remote:
+            sym = p.get("symbol_raw") or f"{p.get('symbol')}USDT"
+            if str(p.get("dir") or "").upper() not in ("UP", "DOWN"):
+                continue
+            # Pozisyonun kendi slot bilgisi boşsa defterin aktif slotundan
+            # tamamla — aşağıda hangi kaynağa ait olduğu karışmasın.
+            p["slot_tr"] = p.get("slot_tr") or slot.get("slot_tr")
+            p["prediction_tr"] = p.get("prediction_tr") or slot.get("prediction_tr")
+            by_symbol.setdefault(sym, []).append((book, p, meta))
+
+    if not by_symbol:
+        print(f"[{spec.label} mirror] kaynaklarda kopyalanacak pozisyon yok")
         return
-    slot = ms.active_slot(meta)
-    pred = ms.slot_prediction_label(meta, hour_tr)
-    window = slot.get("slot_tr") or f"{slot.get('slot_open_tr', '?')}-{slot.get('slot_close_tr', '?')}"
-    print(
-        f"[{spec.label} mirror] {now_tr:%H:%M} · tahmin {pred} · pencere {window} · kaynak {book}",
-        flush=True,
-    )
-    if slot.get("status") and str(slot["status"]).lower() != "active":
-        print(f"[{spec.label} mirror] slot durumu: {slot.get('status')}", flush=True)
-    for note in skipped:
-        print(f"[{spec.label} mirror] atlandı — {note}")
-    if not remote:
-        print(f"[{spec.label} mirror] {pred} — kaynakta kopyalanacak pozisyon yok")
+
+    # Zıt yön = çelişkili sinyal; o sembolde hiçbir kaynak açılmaz.
+    rank = {b: i for i, b in enumerate(books)}
+    plan: list[tuple[str, str, dict, dict]] = []
+    for sym, entries in by_symbol.items():
+        dirs = {str(p.get("dir")).upper() for _, p, _ in entries}
+        if len(dirs) > 1:
+            detail = ", ".join(f"{b}:{str(p.get('dir')).upper()}" for b, p, _ in entries)
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — kaynaklar çelişiyor "
+                  f"({detail}), atlandı")
+            continue
+        plan.extend((sym, book, p, meta) for book, p, meta in entries)
+    if not plan:
+        print(f"[{spec.label} mirror] {now_tr:%H:%M} — çelişki sonrası açılacak sembol kalmadı")
         return
+    # Yüksek WR'li kaynak önce sıraya girsin — bakiye biterse o değil diğeri elensin.
+    plan.sort(key=lambda t: rank.get(t[1], len(books)))
+
     history = load_history(spec)
     state = load_state(spec)
     _, _, hata = _paths(spec)
     pmh.PM_DRY_RUN = False
 
     opened: list[tuple[str, str, float, dict]] = []
-    for p in remote:
-        sym = p.get("symbol_raw") or f"{p.get('symbol')}USDT"
+    for sym, book, p, meta in plan:
         direction = str(p.get("dir") or "").upper()
-        if direction not in ("UP", "DOWN"):
-            continue
-        if _live_has_symbol_slot(state, sym, hour_tr):
+        if _live_has_symbol_slot(state, sym, hour_tr, source=book):
             continue
 
         base = _trade_amount(spec, history, sym)
@@ -632,10 +711,11 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
         slot_amount_log(spec.label, hour_tr, base, amount, hot_boost, cold_cut)
 
         token_id = str(p["pm_token_id"])
-        if _has_token_position(state, token_id):
+        if _has_token_position(state, token_id, source=book):
             continue
-        if not dry and _already_on_chain(pmh, token_id):
-            print(f"[{spec.label} mirror] {_sym_short(sym)} — zincirde zaten pozisyon var, atlandı")
+        if not dry and _unrecorded_on_chain(pmh, state, token_id):
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — zincirde deftere "
+                  f"yazılmamış pozisyon var, atlandı")
             continue
         guards = ms.order_guards(p, amount, meta)
         if guards is None:
@@ -650,8 +730,8 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
                   f"kaynağın alt sınırı ${float(min_stake):.2f}, emir açılmadı")
             continue
         if dry:
-            print(f"[{spec.label} mirror·DRY] {_sym_short(sym)} {direction} ${amount:.2f} "
-                  f"token {token_id[:12]}… kaynak {p.get('pm_entry_price')} "
+            print(f"[{spec.label} mirror·DRY] {book} · {_sym_short(sym)} {direction} "
+                  f"${amount:.2f} token {token_id[:12]}… kaynak {p.get('pm_entry_price')} "
                   f"şimdi {p.get('pm_price_now')} — emir GÖNDERİLMEDİ")
             continue
         order = pmh.pm_place_order(
@@ -682,8 +762,8 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
             "cold_hour_cut": cold_cut,
             "mirrored_from_source": book,
             "source_position_id": p.get("position_id"),
-            "prediction_tr": p.get("prediction_tr") or slot.get("prediction_tr"),
-            "slot_tr": p.get("slot_tr") or slot.get("slot_tr"),
+            "prediction_tr": p.get("prediction_tr"),
+            "slot_tr": p.get("slot_tr"),
             "source_entry_price": p.get("pm_entry_price"),
             "source_price_now": p.get("pm_price_now"),
             "pm_slug": p.get("pm_slug"),
@@ -701,7 +781,7 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
         # poll turu aynı sembolü ikinci kez açar.
         save_state(spec, state)
         opened.append((sym, direction, entry_price, pos))
-        print(f"[{spec.label} mirror] {_sym_short(sym)} {direction} ${amount:.2f} "
+        print(f"[{spec.label} mirror] {book} · {_sym_short(sym)} {direction} ${amount:.2f} "
               f"← kaynak {p.get('pm_entry_price')} / bizim {order['price']}")
 
     if not opened:
@@ -714,16 +794,18 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
     for sym, direction, entry_price, pos in opened:
         dir_icon = "📈" if direction == "UP" else "📉"
         pm_line = pm_tg_stake(pos) or f"💵 ${pos.get('amount', spec.default_amount):.0f}"
+        src = pos.get("mirrored_from_source") or "?"
         lines.append(
-            f"{dir_icon} <b>{_sym_short(sym)}</b>  {direction}  🪞 kaynak aynası\n   {pm_line}"
+            f"{dir_icon} <b>{_sym_short(sym)}</b>  {direction}  🪞 {src}\n   {pm_line}"
         )
+    books_txt = ", ".join(books)
     tg_send(
         spec.label,
         f"{sep}\n🪞 <b>{spec.label} — {now_tr:%H:%M} MIRROR</b>  🔴 GERÇEK PM\n"
         + "\n".join(lines)
-        + f"\n(kaynak defter: {book})\n{sep}\n{_pm_bal_line()}\n{sep}",
+        + f"\n(kaynak defter: {books_txt})\n{sep}\n{_pm_bal_line()}\n{sep}",
     )
-    print(f"[{spec.label} mirror] {len(opened)} açıldı (kaynak {book})")
+    print(f"[{spec.label} mirror] {len(opened)} açıldı (kaynak {books_txt})")
 
 
 async def run_open_direct(spec: LiveSpec) -> None:

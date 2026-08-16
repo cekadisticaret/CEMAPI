@@ -167,29 +167,47 @@ def set_live(book: str, open_: bool) -> bool:
 
 
 # ── mirror kaynağı (bursaapp) ────────────────────────────────────
+from coptc_guard import MIRROR_BOOKS_MAX  # noqa: E402
+
 _MIRROR_KEY = "coptc_mirror_book"
 _MIRROR_DEF = "a2_05"
 _mirror_cache: dict = {"at": 0.0, "rows": []}
 
 
+def mirror_book_list() -> list[str]:
+    """Live işlemin yönünü kopyaladığı kaynak defterler (1–3 adet)."""
+    from coptc_guard import mirror_books_selected
+    return mirror_books_selected(_load_control())
+
+
 def mirror_book() -> str:
-    """Live işlemin yönünü kopyaladığı kaynak defter."""
-    return str(_load_control().get(_MIRROR_KEY) or "a2_05")
+    """Birincil kaynak — tekil gösterim ve eski çağrılar için."""
+    return mirror_book_list()[0]
+
+
+def set_mirror_book_list(books) -> list[str]:
+    from coptc_guard import set_mirror_books
+    return set_mirror_books(books, source="coptc-dashboard")
 
 
 def set_mirror_book(book: str) -> str:
-    from coptc_guard import patch_control
-    patch_control(coptc_mirror_book=str(book), updated_by="coptc-dashboard")
-    return mirror_book()
+    return set_mirror_book_list([book])[0]
+
+
+def _short_of(book: str) -> str:
+    for b in _mirror_cache.get("rows") or []:
+        if b.get("book") == book:
+            return str(b.get("short") or book)
+    return book
 
 
 def mirror_label() -> str:
-    """Seçili kaynak defterin kısa adı (panel gösterimi)."""
-    return str(mirror_meta().get("short") or mirror_book())
+    """Seçili kaynakların kısa adı — birden fazlaysa hepsi artı ile."""
+    return " + ".join(_short_of(b) for b in mirror_book_list())
 
 
 def mirror_meta() -> dict:
-    """Seçili kaynak defterin API satırı — başlık/bakiye için."""
+    """Birincil kaynağın API satırı — başlık/bakiye için."""
     mb = mirror_book()
     rows = _mirror_cache.get("rows") or []
     for b in rows:
@@ -208,18 +226,18 @@ def mirror_books(*, max_age: float = 25.0) -> dict:
 
     now = time.time()
     if _mirror_cache["rows"] and now - _mirror_cache["at"] < max_age:
-        return {"books": _mirror_cache["rows"], "selected": mirror_book(),
+        return {"books": _mirror_cache["rows"], "selected": mirror_book_list(),
                 "cached": True, "error": None}
 
     sys.path.insert(0, _POLY)
     try:
         import coptc_mirror as ms
         if not ms.enabled():
-            return {"books": [], "selected": mirror_book(), "cached": False,
+            return {"books": [], "selected": mirror_book_list(), "cached": False,
                     "error": "MIRROR_API_TOKEN tanımsız"}
         listing = ms.book_list()
     except Exception as e:
-        return {"books": _mirror_cache["rows"], "selected": mirror_book(),
+        return {"books": _mirror_cache["rows"], "selected": mirror_book_list(),
                 "cached": bool(_mirror_cache["rows"]), "error": str(e)}
 
     def _one(b: dict) -> dict:
@@ -259,7 +277,7 @@ def mirror_books(*, max_age: float = 25.0) -> dict:
         rows = list(ex.map(_one, listing))
 
     _mirror_cache.update({"at": now, "rows": rows})
-    return {"books": rows, "selected": mirror_book(), "cached": False, "error": None}
+    return {"books": rows, "selected": mirror_book_list(), "cached": False, "error": None}
 
 
 # ── istatistik ───────────────────────────────────────────────────
@@ -424,13 +442,12 @@ def _position_row(p: dict, spot_map: dict[str, float | None]) -> dict:
         winning = (now_spot > entry) if direction == "UP" else (now_spot < entry)
 
     book = _clob_book(p.get("pm_token_id") or "")
-    exit_price = book.get("bid")
-    if exit_price is None:
-        exit_price = _token_price(p.get("pm_slug") or "", direction)
-
-    token_bid = round(float(exit_price), 3) if exit_price else None
-    close_val = round(size * float(exit_price), 2) if exit_price is not None and size else None
+    bid = book.get("bid")
+    token_bid = round(float(bid), 3) if bid is not None else None
+    # Anlık kapatma yalnızca CLOB bid — gamma fiyatı kaybeden pozisyonda yanıltıcı olur
+    close_val = round(size * float(bid), 2) if bid is not None and size else None
     close_pnl = round(close_val - spent, 2) if close_val is not None and spent else None
+    no_liquidity = bool(p.get("pm_token_id")) and bid is None
     pnl_pct = round(close_pnl / spent * 100, 1) if close_pnl is not None and spent else None
     win_profit = round(size - spent, 2) if size and spent else None
 
@@ -445,12 +462,14 @@ def _position_row(p: dict, spot_map: dict[str, float | None]) -> dict:
         "pnl_pct": pnl_pct,
         "win_profit": win_profit,
         "slot": _slot_label(p),
+        "source": _short_of(str(p.get("mirrored_from_source") or "")) if p.get("mirrored_from_source") else "",
         "title": p.get("pm_title") or p.get("pm_slug") or "",
         "spot_now": round(now_spot, 2) if now_spot is not None else None,
         "spot_diff": spot_diff,
         "spot_pct": spot_pct,
         "winning": winning,
         "token_bid": token_bid,
+        "no_liquidity": no_liquidity,
         "live": bool(p.get("pm_token_id")),
     }
 
@@ -514,30 +533,51 @@ def pm_snapshot(book: str) -> dict:
     }
 
 
-def _mirror_signals(source: str) -> list[dict]:
-    """Seçili kaynak defterin açık pozisyonları + anlık fiyat — sembol kartları."""
+def _mirror_signals(sources: list[str]) -> list[dict]:
+    """Seçili kaynakların açık pozisyonları + anlık fiyat — sembol kartları.
+
+    Birden fazla kaynakta aynı sembol zıt yönde geliyorsa çelişki sayılır;
+    o sembolde emir açılmayacağı için kart da yön göstermez.
+    """
     if not _mirror_cache.get("rows"):
         mirror_books()
-    meta = next((b for b in (_mirror_cache.get("rows") or []) if b.get("book") == source), None)
-    short = (meta or {}).get("short") or source
-    wr = (meta or {}).get("wr")
-    by_sym = {p.get("symbol"): p for p in (meta or {}).get("positions") or [] if p.get("symbol")}
+    rows = _mirror_cache.get("rows") or []
+    metas = [
+        next((b for b in rows if b.get("book") == s), {"book": s, "short": s})
+        for s in sources
+    ]
+    all_shorts = " + ".join(str(m.get("short") or m.get("book")) for m in metas)
     spots = _spot_prices(["BTCUSDT", "ETHUSDT", "SOLUSDT"])
     out = []
     for sym in ("BTC", "ETH", "SOL"):
-        p = by_sym.get(sym)
-        pair = f"{sym}USDT"
-        foot = "bu slotta kaynakta açık yok"
-        if p:
-            pred = p.get("prediction_tr") or p.get("slot_tr") or ""
-            foot = f"{p.get('dir')} · {pred}".strip(" ·")
+        hits = []
+        for m in metas:
+            p = next((x for x in m.get("positions") or []
+                      if x.get("symbol") == sym and x.get("dir")), None)
+            if p:
+                hits.append((str(m.get("short") or m.get("book")), p, m.get("wr")))
+        dirs = {h[1].get("dir") for h in hits}
+        if not hits:
+            direction = None
+            foot = "bu slotta kaynakta açık yok"
+        elif len(dirs) > 1:
+            direction = None
+            foot = "çelişki — " + " / ".join(
+                f"{s} {'↑' if p.get('dir') == 'UP' else '↓'}" for s, p, _ in hits)
+        else:
+            direction = hits[0][1].get("dir")
+            pred = hits[0][1].get("prediction_tr") or hits[0][1].get("slot_tr") or ""
+            foot = f"{direction} · {pred}".strip(" ·")
+            if len(hits) > 1:
+                foot += f" · {len(hits)} kaynak"
+        wrs = [h[2] for h in hits if h[2] is not None]
         out.append({
             "name": sym,
-            "price": spots.get(pair),
-            "dir": p.get("dir") if p else None,
+            "price": spots.get(f"{sym}USDT"),
+            "dir": direction,
             "metric_label": "KAYNAK",
-            "metric_value": short,
-            "gauge": (wr or 50) / 100.0,
+            "metric_value": " + ".join(h[0] for h in hits) or all_shorts,
+            "gauge": (sum(wrs) / len(wrs) / 100.0) if wrs else 0.5,
             "foot": foot,
         })
     return out
@@ -548,8 +588,9 @@ def live_signals(book: str) -> list[dict]:
     sys.path.insert(0, _POLY)
     try:
         import coptc_mirror as ms
-        if ms.enabled() and mirror_book():
-            return _mirror_signals(mirror_book())
+        selected = mirror_book_list()
+        if ms.enabled() and selected:
+            return _mirror_signals(selected)
     except Exception:
         pass
     return [{"name": s, "price": None, "dir": None, "metric_label": "KAYNAK",
@@ -761,6 +802,7 @@ def cash_out_now() -> dict:
 
 
 _OPEN_LOCK = os.path.join(_POLY, ".coptc_open.lock")
+_MANUAL_CLOSE_ALL_ENABLED = True
 
 
 def manual_close_all() -> tuple[dict, int]:
@@ -769,6 +811,8 @@ def manual_close_all() -> tuple[dict, int]:
     Ayna turu (:05:10–:08) aynı state dosyasına yazıyor — runner'ın kilidini
     alamazsak hiç başlama; iki süreç state'i birbirinin üzerine yazar.
     """
+    if not _MANUAL_CLOSE_ALL_ENABLED:
+        return {"error": "Tümünü kapat panelden kapalı"}, 403
     import fcntl
 
     opens = [p for p in state(BOOKS["live"]["live"]).get("open_positions") or [] if _is_real_pm(p)]
@@ -816,7 +860,7 @@ def open_positions_all() -> tuple[list[dict], dict]:
                 upnl += r["close_pnl"] or 0.0
             rows.append(r)
 
-    rows.sort(key=lambda r: (r["book"], r["symbol"]))
+    rows.sort(key=lambda r: (r["book"], r["symbol"], r.get("source") or ""))
     return rows, {
         "total": round(risk, 2), "to_win": round(to_win, 2),
         "open": len(rows), "upnl": round(upnl, 2),
@@ -850,12 +894,18 @@ def overview(book: str) -> dict:
     if src.get("open"):
         sub.append(f"{src['open']} açık")
     src_sub = " · ".join(sub) if sub else "API kaynağı · saatlik"
+    selected = mirror_book_list()
+    if len(selected) > 1:
+        # Bakiye/WR birincil deftere ait; başlıkta hepsi görünsün ki
+        # rakamların tek kaynağa ait olduğu karışmasın.
+        src_sub = f"{len(selected)} kaynak birlikte · birincil: {src_sub}"
+    src_name = mirror_label() if len(selected) > 1 else (src.get("short") or mirror_label())
 
     wk = weekend_info()
     return {
         "book": book,
         "badge": src.get("short") or mirror_label(),
-        "title": src.get("short") or mirror_label(),
+        "title": src_name,
         "subtitle": src_sub,
         "timeline": [(":02", "Live kapat"), (":05:10–:08", "Kaynak aynası poll → PM emri")],
         "live_open": live_open(book),
@@ -864,6 +914,7 @@ def overview(book: str) -> dict:
         "weekend": wk,
         "effective_live_on": wk["effective_live_on"],
         "mirror_book": mirror_book(),
+        "mirror_books": mirror_book_list(),
         "mirror_short": mirror_label(),
         "mirror_balance": src.get("balance"),
         "mirror_pnl": src.get("pnl"),

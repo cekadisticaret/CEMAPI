@@ -125,6 +125,7 @@ let LIVE_ON = false;
 let HIST = [];
 let POS_N = 0;
 let CLOSING = false;
+const CLOSE_ALL_ENABLED = true;
 const $ = id => document.getElementById(id);
 const money = v => v === null || v === undefined ? '—'
   : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -142,15 +143,16 @@ function posCard(p){
   const pnlTxt = p.close_pnl == null ? '—'
     : (p.close_pnl >= 0 ? '+' : '') + p.close_pnl.toFixed(2) + '$';
   const badge = p.badge ? `<span class="ptag${p.book === BOOK ? ' me' : ''}">${p.badge}</span>` : '';
+  const srcTag = p.source ? `<span class="ptag src">${p.source}</span>` : '';
   const dirCls = p.dir === 'UP' ? 'up' : (p.dir === 'DOWN' ? 'dn' : '');
   return `<div class="pcard ${dirCls}"><div class="phead">
-      <span class="psym">${p.symbol}${badge}</span>
+      <span class="psym">${p.symbol}${badge}${srcTag}</span>
       <span class="tag ${p.dir === 'UP' ? 'up' : 'dn'}">${dirTr}</span></div>
     <div class="ppx">${fmtSpot(p.spot_now)} ${winMark} ${deltaTxt}</div>
     <div class="pmeta">Giriş $${p.entry ?? '—'} · Slot ${p.slot || '—'}</div>
     <div class="pclose"><div><div class="risk-k">Anlık kapatma</div>
-      <div class="mut" style="font-size:11px">token ${p.token_bid ?? '—'}</div></div>
-      <div class="risk-v ${cls(p.close_pnl)}">${money(p.close_val)}</div></div>
+      <div class="mut" style="font-size:11px">${p.no_liquidity ? 'alıcı yok' : ('token ' + (p.token_bid ?? '—'))}</div></div>
+      <div class="risk-v ${cls(p.close_pnl)}">${p.no_liquidity ? '—' : money(p.close_val)}</div></div>
     <div class="pfoot">
       <span>Risk <b>${money(p.spent)}</b> · Anlık <b class="${cls(p.close_pnl)}">${pnlTxt}</b></span>
       <span>Kazanırsa <b class="g">${money(p.to_win)}</b></span></div></div>`;
@@ -296,12 +298,14 @@ function render(d){
   $('posBadge').textContent = nPos ? `${nPos} AÇIK` : 'BOŞ';
   $('posBadge').className = 'status ' + (nPos ? 'ok' : 'wait');
   POS_N = nPos;
-  // Kapatma sürerken 30 sn'lik otomatik yenileme butonu sıfırlamasın.
-  if (!CLOSING){
+  // Tümünü kapat — panelden kapalı (CLOSE_ALL_ENABLED)
+  if (CLOSE_ALL_ENABLED && !CLOSING){
     const bca = $('bcloseall');
     bca.style.display = nPos ? '' : 'none';
     bca.disabled = false;
     bca.textContent = 'Tümünü kapat';
+  } else {
+    $('bcloseall').style.display = 'none';
   }
 
   $('hsrc').textContent = (d.mirror_short || d.badge) + ' · saatlik WR';
@@ -361,6 +365,7 @@ const rs0 = $('redeemStat');
 if (rs0) rs0.onclick = cashOut;
 
 async function closeAll(){
+  if (!CLOSE_ALL_ENABLED) return;
   if (CLOSING) return;
   if (!confirm(`${POS_N} açık pozisyonun tamamı piyasa fiyatından satılacak.\nGeri alınamaz — onaylıyor musun?`)) return;
   const b = $('bcloseall');
@@ -372,7 +377,7 @@ async function closeAll(){
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Başarısız');
     const pnl = (d.pnl > 0 ? '+' : '') + money(d.pnl);
-    alert(`${d.closed} pozisyon kapatıldı · ${pnl}` + (d.failed ? `\n${d.failed} pozisyon satılamadı — tekrar dene.` : ''));
+    alert(`${d.closed} pozisyon kapatıldı · ${pnl}` + (d.failed ? `\n${d.failed} pozisyon satılamadı${d.error ? ' — ' + d.error : ' — tekrar dene.'}` : ''));
   } catch(e){
     alert('Kapatma başarısız: ' + e.message);
   } finally {
@@ -466,13 +471,23 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
         </div>
 
         <div class="card settings-full">
-          <div class="card-hd"><span class="card-title">Kaynak algoritma</span><span class="status wait">API</span></div>
+          <div class="card-hd">
+            <span class="card-title">Kaynak algoritma <span class="pos-count" id="mcount"></span></span>
+            <span class="status wait">API</span>
+          </div>
           <div class="mtools">
             <input id="q" placeholder="Defter ara…" autocomplete="off">
             <button class="btn" id="brel">Yenile</button>
           </div>
+          <div class="msel-bar">
+            <div class="msel-now" id="mnow">—</div>
+            <button class="btn" id="mreset" disabled>Geri al</button>
+            <button class="btn primary" id="msave" disabled>Kaydet</button>
+          </div>
           <div id="mlist"><div class="empty">Kaynak listesi yükleniyor…</div></div>
-          <div class="hint" id="mhint">Seçtiğin defterin yönü kopyalanır — yerel sinyal hesaplanmaz.</div>
+          <div class="hint" id="mhint">En fazla 3 algoritma seçilebilir; hepsi aynı anda çalışır.
+            Aynı sembolde ikisi de aynı yönü derse her biri için ayrı pozisyon açılır,
+            zıt yön derlerse o sembol atlanır. Öncelik win rate'i yüksek olanda.</div>
         </div>
 
         <div class="card settings-full">
@@ -497,7 +512,10 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
 
 <script>
 let BOOK = {{ book|tojson }};
-let LIVE_ON = false, MIRROR = '', ROWS = [], WEEKEND_ON = false, COLD_CUT_ON = false;
+let LIVE_ON = false, ROWS = [], WEEKEND_ON = false, COLD_CUT_ON = false;
+// MIRROR = kayıtlı seçim, PICK = henüz kaydedilmemiş seçim (null = hiç dokunulmadı)
+let MIRROR = [], PICK = null;
+const MIRROR_MAX = 3;
 const $ = id => document.getElementById(id);
 const money = v => v === null || v === undefined ? '—'
   : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -541,7 +559,8 @@ async function toggleWeekend(){
 }
 
 function render(d){
-  BOOK = d.book; LIVE_ON = d.live_on; MIRROR = d.mirror_book || '';
+  BOOK = d.book; LIVE_ON = d.live_on;
+  setSaved(d.mirror_books || (d.mirror_book ? [d.mirror_book] : []));
   renderWeekend(d.weekend);
   const wkPause = d.weekend && d.weekend.active;
   $('pill').textContent = !d.live_on ? 'LIVE KAPALI' : (wkPause ? 'HAFTA SONU' : 'LIVE AÇIK');
@@ -607,13 +626,24 @@ async function load(){
   render(await r.json());
 }
 
+const pick = () => PICK || MIRROR;
+const bookName = k => { const b = ROWS.find(x => x.book === k); return b ? b.short : k; };
+const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x));
+const dirty = () => !sameSet(pick(), MIRROR);
+
+function setSaved(list){
+  MIRROR = Array.isArray(list) ? list.slice() : (list ? [list] : []);
+  if (PICK === null) PICK = MIRROR.slice();
+}
+
 function mrow(b){
   const dirs = (b.positions||[]).map(p =>
     `<span class="chip ${p.dir==='UP'?'up':'dn'}">${p.symbol} ${p.dir==='UP'?'↑':'↓'}</span>`).join('');
-  const on = b.book === MIRROR;
+  const on = pick().includes(b.book);
   const pnlCls = b.pnl == null ? '' : (b.pnl >= 0 ? 'g' : 'b');
   return `<div class="mrow ${on?'on':''}" data-k="${b.book}">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="mtick">${on?'✓':''}</span>
       <span class="nm">${b.short}</span>${on?'<span class="sel">SEÇİLİ</span>':''}
       <span class="mut" style="margin-left:auto;font-size:11px">${b.open?b.open+' açık':'açık yok'}</span></div>
     <div style="display:flex;gap:12px;align-items:baseline">
@@ -627,7 +657,34 @@ function drawMirror(){
   const q = ($('q').value||'').toLocaleLowerCase('tr');
   const rows = ROWS.filter(b => !q || (b.short||'').toLocaleLowerCase('tr').includes(q) || (b.label||'').toLocaleLowerCase('tr').includes(q));
   $('mlist').innerHTML = rows.length ? `<div class="mlist">${rows.map(mrow).join('')}</div>` : `<div class="empty">Eşleşen defter yok</div>`;
-  document.querySelectorAll('.mrow').forEach(el => el.onclick = () => choose(el.dataset.k));
+  document.querySelectorAll('.mrow').forEach(el => el.onclick = () => toggle(el.dataset.k));
+  const cur = pick(), chg = dirty();
+  $('mcount').textContent = cur.length ? `(${cur.length}/${MIRROR_MAX})` : '';
+  $('mnow').innerHTML = cur.length
+    ? (chg ? 'Kaydedilmedi: ' : 'Çalışan: ') + `<b>${cur.map(bookName).join(' + ')}</b>`
+    : 'Seçim yok';
+  $('mnow').className = 'msel-now' + (chg ? ' dirty' : '');
+  $('msave').disabled = !chg;
+  $('mreset').disabled = !chg;
+}
+
+function toggle(book){
+  const cur = pick().slice();
+  const i = cur.indexOf(book);
+  if (i >= 0){
+    if (cur.length === 1){
+      $('mhint').innerHTML = '<span class="werr">En az bir algoritma seçili kalmalı.</span>';
+      return;
+    }
+    cur.splice(i, 1);
+  } else if (cur.length >= MIRROR_MAX){
+    $('mhint').innerHTML = `<span class="werr">En fazla ${MIRROR_MAX} algoritma seçebilirsin — önce birini çıkar.</span>`;
+    return;
+  } else {
+    cur.push(book);
+  }
+  PICK = cur;
+  drawMirror();
 }
 
 async function loadMirror(){
@@ -636,25 +693,41 @@ async function loadMirror(){
     const r = await fetch('/api/mirror/books', {cache:'no-store'});
     const d = await r.json();
     if (d.error && !(d.books||[]).length){ $('mlist').innerHTML = `<div class="empty werr">${d.error}</div>`; return; }
-    ROWS = d.books||[]; MIRROR = d.selected||MIRROR; drawMirror();
+    ROWS = d.books||[]; setSaved(d.selected); drawMirror();
   } finally { $('brel').disabled = false; }
 }
 
-async function choose(book){
-  if (book === MIRROR) return;
-  const b = ROWS.find(x => x.book === book);
-  if (!confirm(`Kaynak "${b?b.short:book}" olarak değişecek. Devam?`)) return;
-  const r = await fetch('/api/mirror/select', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({book})});
-  MIRROR = (await r.json()).selected || book;
-  $('mhint').innerHTML = `<span class="wok">Kaynak <b>${b?b.short:book}</b> kaydedildi.</span>`;
-  drawMirror();
+async function saveMirror(){
+  const list = pick().slice();
+  if (!list.length) return;
+  const names = list.map(bookName);
+  if (!confirm(`Kaynak algoritmalar:\n\n${names.join('\n')}\n\n`
+    + `Bu ${names.length} algoritma aynı anda çalışacak ve her biri kendi `
+    + `pozisyonunu açacak. Devam?`)) return;
+  $('msave').disabled = true;
+  try{
+    const r = await fetch('/api/mirror/select', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({books: list}),
+    });
+    if (r.status === 401) return location.href = '/giris';
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Kaydedilemedi');
+    MIRROR = d.selected || list; PICK = MIRROR.slice();
+    $('mhint').innerHTML = `<span class="wok">Kaydedildi — ${MIRROR.map(bookName).join(' + ')} birlikte çalışacak.</span>`;
+    load();
+  } catch(e){
+    $('mhint').innerHTML = `<span class="werr">${e.message}</span>`;
+  } finally { drawMirror(); }
 }
 
 $('q').oninput = drawMirror; $('brel').onclick = loadMirror;
+$('msave').onclick = saveMirror;
+$('mreset').onclick = () => { PICK = MIRROR.slice(); drawMirror(); };
 $('bweekend').onclick = toggleWeekend;
 $('blive').onclick = async () => {
   const on = !LIVE_ON;
-  if (on && !confirm(`GERÇEK PARA — ${MIRROR||'kaynak'} bir sonraki slotta PM emri açacak. Onay?`)) return;
+  if (on && !confirm(`GERÇEK PARA — ${MIRROR.map(bookName).join(' + ')||'kaynak'} bir sonraki slotta PM emri açacak. Onay?`)) return;
   $('blive').disabled = true;
   await fetch('/api/active', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({book:BOOK, on})});
   $('blive').disabled = false; load();

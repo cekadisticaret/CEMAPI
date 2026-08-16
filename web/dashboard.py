@@ -121,11 +121,22 @@ def api_mirror_books():
 @app.route("/api/mirror/select", methods=["POST"])
 @guard
 def api_mirror_select():
+    """Çoklu seçim: {"books": [...]}. Tekil {"book": "..."} da kabul edilir."""
     d = request.get_json(silent=True) or {}
-    book = str(d.get("book") or "").strip()
-    if not book:
+    raw = d.get("books")
+    if not isinstance(raw, list):
+        raw = [d.get("book")]
+    books = [str(b or "").strip() for b in raw]
+    books = [b for b in books if b]
+    if not books:
         return jsonify({"error": "defter belirtilmedi"}), 400
-    return jsonify({"selected": api.set_mirror_book(book)})
+    if len(books) > api.MIRROR_BOOKS_MAX:
+        return jsonify({"error": f"en fazla {api.MIRROR_BOOKS_MAX} algoritma seçilebilir"}), 400
+    known = {b.get("book") for b in (api.mirror_books().get("books") or [])}
+    unknown = [b for b in books if known and b not in known]
+    if unknown:
+        return jsonify({"error": f"bilinmeyen defter: {', '.join(unknown)}"}), 404
+    return jsonify({"selected": api.set_mirror_book_list(books)})
 
 
 @app.route("/<book>")

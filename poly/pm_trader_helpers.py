@@ -601,8 +601,8 @@ def pm_clob_error_tr(err: str | Exception) -> str:
         return "Polymarket aşırı yüklü veya bakımda — sonra tekrar deneyin"
     if code == 429 or "rate limit" in low or "too many" in low:
         return "Çok fazla istek — birkaç saniye bekleyip tekrar deneyin"
-    if "no orders found" in low:
-        return "Yeterli likidite yok — emir eşleşmedi"
+    if "no match" in low or "no orders found" in low:
+        return "Piyasada alıcı yok — slot sonuna kadar bekleyin veya likidite gelince tekrar deneyin"
     if "fak eşleşmedi" in low or "fak eslesmedi" in low:
         return "Satış emri eşleşmedi — likidite düşük olabilir"
     if "invalid token" in low or "orderbook" in low:
@@ -744,7 +744,7 @@ def pm_place_order(
 
 def pm_sell_position(
     token_id: str, size: float | None = None, *,
-    tick_size: str = "0.01", label: str = "PM", attempts: int = 3,
+    tick_size: str | None = None, label: str = "PM", attempts: int = 3,
 ) -> dict | None:
     """Elde tutulan share'leri piyasa fiyatından sat (manuel kapatma)."""
     from decimal import Decimal, ROUND_DOWN
@@ -760,8 +760,8 @@ def pm_sell_position(
     if sell_size < 0.01:
         return None
 
-    tick = float(tick_size or 0.01)
     last_err = None
+    price = 0.0
     for attempt in range(1, max(1, attempts) + 1):
         try:
             from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions
@@ -774,8 +774,26 @@ def pm_sell_position(
                 )
             except Exception:
                 pass
-            raw = float(client.calculate_market_price(token_id, "SELL", sell_size, OrderType.FAK))
-            # aşağı yuvarla — dolma şansı artsın
+            book = client.get_order_book(token_id)
+            tick = float(tick_size or book.get("tick_size") or 0.01)
+            bids = book.get("bids") or []
+            if bids:
+                raw = max(float(b["price"]) for b in bids)
+            else:
+                try:
+                    raw = float(
+                        client.calculate_market_price(token_id, "SELL", sell_size, OrderType.FAK)
+                    )
+                except Exception as calc_err:
+                    last_err = str(calc_err)
+                    if "no match" in last_err.lower():
+                        print(
+                            f"[{label}] SELL — emir defterinde alıcı yok ({sell_size:g} share)",
+                            file=sys.stderr,
+                        )
+                        break
+                    raise
+            # aşağı yuvarla — dolma şansı artsın; tick piyasadan (çoğu saatlik 0.001)
             price = float(Decimal(str(raw)).quantize(Decimal(str(tick)), rounding=ROUND_DOWN))
             price = max(tick, min(1.0 - tick, price))
             proceeds = round(sell_size * price, 2)

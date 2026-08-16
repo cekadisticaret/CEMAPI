@@ -13,6 +13,11 @@ _LABEL = "CoptC Live"
 _TZ_TR = timezone(timedelta(hours=3))
 WEEKEND_RESUME_HOUR = 11  # Cum 22:00 – Pzt 11:00 İST
 
+MIRROR_BOOKS_KEY = "coptc_mirror_books"
+MIRROR_BOOK_KEY = "coptc_mirror_book"
+MIRROR_BOOK_DEFAULT = "a2_05"
+MIRROR_BOOKS_MAX = 3
+
 
 def _load_control() -> dict:
     defaults = {
@@ -167,6 +172,42 @@ def patch_control(**fields) -> dict:
         data["updated_by"] = "coptc"
     _save_control(data)
     return data
+
+
+def _clean_books(raw) -> list[str]:
+    out: list[str] = []
+    for b in raw or []:
+        b = str(b or "").strip()
+        if b and b not in out:
+            out.append(b)
+    return out[:MIRROR_BOOKS_MAX]
+
+
+def mirror_books_selected(control: dict | None = None) -> list[str]:
+    """Seçili kaynak defterler.
+
+    Tek defter tutan eski kayıtlar (coptc_mirror_book) da listeye çevrilir,
+    böylece liste anahtarı hiç yazılmamış kurulumlar kırılmaz.
+    """
+    data = control if control is not None else _load_control()
+    raw = data.get(MIRROR_BOOKS_KEY)
+    out = _clean_books(raw if isinstance(raw, list) else [])
+    if out:
+        return out
+    one = str(data.get(MIRROR_BOOK_KEY) or "").strip()
+    return [one] if one else [MIRROR_BOOK_DEFAULT]
+
+
+def set_mirror_books(books, *, source: str = "") -> list[str]:
+    """Seçimi yaz. Tekil anahtar da ilk defterle güncellenir — hâlâ onu okuyan
+    bir yer kalırsa boşa düşmesin."""
+    clean = _clean_books(books) or [MIRROR_BOOK_DEFAULT]
+    patch_control(**{
+        MIRROR_BOOKS_KEY: clean,
+        MIRROR_BOOK_KEY: clean[0],
+        "updated_by": source or "coptc",
+    })
+    return clean
 
 
 def get_coptc_control() -> dict:
