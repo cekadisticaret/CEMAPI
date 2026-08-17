@@ -6,9 +6,6 @@ workflows:
     integrations:
       app_store_connect: CoptC
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: tr.deadella.coptc
       vars:
         BUNDLE_ID: tr.deadella.coptc
         XCODE_SCHEME: CoptC
