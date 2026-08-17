@@ -11,7 +11,7 @@ workflows:
       vars:
         BUNDLE_ID: tr.deadella.coptc
         XCODE_SCHEME: CoptC
-      xcode: latest
+      xcode: 16.4
     triggering:
       events:
         - push
@@ -43,6 +43,11 @@ workflows:
           xcode-project build-ipa \
             --project "$CM_BUILD_DIR/ios/CoptC.xcodeproj" \
             --scheme "$XCODE_SCHEME"
+      - name: Upload to TestFlight
+        script: |
+          IPA=$(find "$CM_BUILD_DIR" -name "*.ipa" | head -1)
+          echo "IPA: $IPA"
+          app-store-connect publish --path "$IPA"
     artifacts:
       - build/ios/ipa/*.ipa
     publishing:
@@ -52,6 +57,3 @@ workflows:
         notify:
           success: true
           failure: true
-      app_store_connect:
-        auth: integration
-        submit_to_testflight: true
