@@ -8,7 +8,7 @@ struct HistoryRowView: View {
         HStack(alignment: .top, spacing: 14) {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(trade.win ? Theme.gold : Theme.navy.opacity(0.25))
+                    .fill(trade.win ? Theme.green : Theme.red)
                     .frame(width: 10, height: 10)
                     .padding(.top, 18)
                 if !isLast {
@@ -24,7 +24,7 @@ struct HistoryRowView: View {
                 Text(timeLabel)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Theme.mut)
-                SoftCard(fill: Theme.cream) {
+                SoftCard(fill: Theme.pnlFill(trade.pnl)) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(trade.symbol)

@@ -32,9 +32,17 @@ struct PositionCardView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 168, alignment: .topLeading)
-        .background(Theme.cream)
+        .background(cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Theme.pnlColor(position.closePnl).opacity(0.28), lineWidth: 1)
+        }
         .modifier(SoftShadow())
+    }
+
+    private var cardFill: Color {
+        position.noLiquidity ? Theme.cream : Theme.pnlFill(position.closePnl)
     }
 
     private var pnlText: String {

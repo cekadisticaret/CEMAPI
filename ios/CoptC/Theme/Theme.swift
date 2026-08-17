@@ -10,6 +10,8 @@ enum Theme {
     static let mut = Color(red: 0.45, green: 0.50, blue: 0.55)
     static let green = Color(red: 0.22, green: 0.62, blue: 0.45)
     static let red = Color(red: 0.78, green: 0.32, blue: 0.32)
+    static let greenSoft = Color(red: 0.86, green: 0.95, blue: 0.89)
+    static let redSoft = Color(red: 0.98, green: 0.89, blue: 0.89)
     static let radius: CGFloat = 26
 
     static func money(_ value: Double?) -> String {
@@ -23,6 +25,13 @@ enum Theme {
         if value > 0 { return green }
         if value < 0 { return red }
         return mut
+    }
+
+    static func pnlFill(_ value: Double?) -> Color {
+        guard let value else { return cream }
+        if value > 0 { return greenSoft }
+        if value < 0 { return redSoft }
+        return cream
     }
 }
 
