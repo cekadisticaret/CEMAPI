@@ -16,3 +16,6 @@ poly/coptc_live_polyhata.json
 poly/withdraw_log.jsonl
 poly/coptc_control.json
 poly/pm_system_control.json
+ios/build/
+ios/CoptC.xcodeproj/
+ios/*.xcworkspace/

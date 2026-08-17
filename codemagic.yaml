@@ -1,0 +1,60 @@
+workflows:
+  ios-testflight:
+    name: CoptC iOS TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: tr.deadella.coptc
+      vars:
+        BUNDLE_ID: tr.deadella.coptc
+        XCODE_SCHEME: CoptC
+      xcode: latest
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd ios
+          xcodegen generate
+      - name: Set up code signing
+        script: xcode-project use-profiles
+      - name: Build and export IPA
+        script: |
+          cd ios
+          xcodebuild -project CoptC.xcodeproj \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/CoptC.xcarchive \
+            archive \
+            CODE_SIGN_STYLE=Manual
+          xcodebuild -exportArchive \
+            -archivePath build/CoptC.xcarchive \
+            -exportPath build/ipa \
+            -exportOptionsPlist "$CM_EXPORT_OPTIONS"
+    artifacts:
+      - ios/build/ipa/*.ipa
+      - ios/build/CoptC.xcarchive
+    publishing:
+      email:
+        recipients:
+          - user@example.com
+        notify:
+          success: true
+          failure: true
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - Internal Testers

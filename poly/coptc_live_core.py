@@ -333,7 +333,14 @@ async def run_close(spec: LiveSpec) -> None:
         print(f"[{spec.label} close] cash-out: {e}", file=sys.stderr)
 
 
-def run_manual_close(spec: LiveSpec, symbols: list[str] | None = None) -> dict:
+def run_manual_close(
+    spec: LiveSpec,
+    symbols: list[str] | None = None,
+    *,
+    token_id: str | None = None,
+    source: str | None = None,
+    hour_tr: int | None = None,
+) -> dict:
     """Açık live pozisyonları piyasa fiyatından sat — sonucu beklemeden kapat."""
     import pm_trader_helpers as pmh
     from pm_trader_helpers import pm_sell_position
@@ -349,20 +356,27 @@ def run_manual_close(spec: LiveSpec, symbols: list[str] | None = None) -> dict:
         return {"closed": 0, "failed": 0, "pnl": 0.0}
 
     want = {s.upper() for s in symbols} if symbols else None
+    targeted = bool(token_id)
     kalan, lines = [], []
     closed = failed = 0
     tur_pnl = 0.0
 
     for pos in opens:
         sym = pos.get("symbol") or ""
-        token_id = pos.get("pm_token_id")
-        if (want and sym.upper() not in want and _sym_short(sym).upper() not in want) or not token_id:
+        tid = pos.get("pm_token_id")
+        if not _manual_close_match(
+            pos, symbols=want, token_id=token_id, source=source, hour_tr=hour_tr,
+        ):
             kalan.append(pos)
             continue
 
-        # size=None → zincirdeki gerçek bakiye satılır; dolum kayıttan biraz
-        # fazla share verdiyse artık dust kalmasın.
-        res = pm_sell_position(token_id, None, label=spec.label)
+        sell_size = None
+        if targeted:
+            sz = float(pos.get("pm_size") or 0)
+            if sz >= 0.01:
+                sell_size = sz
+
+        res = pm_sell_position(str(tid), sell_size, label=spec.label)
         if not res:
             failed += 1
             kalan.append(pos)
@@ -419,7 +433,33 @@ def run_manual_close(spec: LiveSpec, symbols: list[str] | None = None) -> dict:
     out = {"closed": closed, "failed": failed, "pnl": round(tur_pnl, 2)}
     if failed:
         out["error"] = pmh.pm_last_order_error()
+    elif targeted and closed == 0:
+        out["error"] = "Pozisyon bulunamadı"
     return out
+
+
+def _manual_close_match(
+    pos: dict,
+    *,
+    symbols: set[str] | None,
+    token_id: str | None,
+    source: str | None,
+    hour_tr: int | None,
+) -> bool:
+    tid = pos.get("pm_token_id")
+    if not tid:
+        return False
+    if token_id and str(tid) != str(token_id):
+        return False
+    if source and str(pos.get("mirrored_from_source") or "") != str(source):
+        return False
+    if hour_tr is not None and pos.get("entry_hour_tr") != hour_tr:
+        return False
+    if symbols:
+        sym = pos.get("symbol") or ""
+        if sym.upper() not in symbols and _sym_short(sym).upper() not in symbols:
+            return False
+    return True
 
 
 async def mirror_open_from_sanal(

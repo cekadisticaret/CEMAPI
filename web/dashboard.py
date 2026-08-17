@@ -30,6 +30,39 @@ app.secret_key = os.getenv("COPTC_SECRET") or secrets.token_hex(16)
 PASSWORD = (os.getenv("COPTC_PASSWORD") or "").strip()
 PORT = int(os.getenv("COPTC_PORT") or 5060)
 APP_NAME = "CoptC Live Control"
+URL_PREFIX = (os.getenv("COPTC_URL_PREFIX") or "").strip().rstrip("/")
+if URL_PREFIX and not URL_PREFIX.startswith("/"):
+    URL_PREFIX = "/" + URL_PREFIX
+
+
+class _PrefixMiddleware:
+    """nginx /admin/ altında — PATH_INFO önekini soy, oturum çerezi doğru kalsın."""
+
+    def __init__(self, wsgi_app, prefix: str):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        environ["SCRIPT_NAME"] = self.prefix
+        path = environ.get("PATH_INFO") or "/"
+        if path == self.prefix:
+            environ["PATH_INFO"] = "/"
+        elif path.startswith(self.prefix + "/"):
+            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+        scheme = environ.get("HTTP_X_FORWARDED_PROTO")
+        if scheme:
+            environ["wsgi.url_scheme"] = scheme
+        return self.wsgi_app(environ, start_response)
+
+
+if URL_PREFIX:
+    app.wsgi_app = _PrefixMiddleware(app.wsgi_app, URL_PREFIX)
+    app.config["SESSION_COOKIE_PATH"] = URL_PREFIX + "/"
+    app.config["APPLICATION_ROOT"] = URL_PREFIX
+
+
+def _url(path: str) -> str:
+    return f"{URL_PREFIX}{path}" if URL_PREFIX else path
 
 
 def static_ver() -> str:
@@ -57,6 +90,7 @@ def _tpl(name: str) -> str:
 def _render(name: str, **ctx):
     ctx.setdefault("app_name", APP_NAME)
     ctx.setdefault("static_ver", static_ver())
+    ctx.setdefault("base", URL_PREFIX)
     return render_template_string(_tpl(name), **ctx)
 
 
@@ -74,7 +108,7 @@ def guard(fn):
         if PASSWORD and not session.get("ok"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "yetkisiz"}), 401
-            return redirect("/giris")
+            return redirect(_url("/giris"))
         return fn(*a, **kw)
     return inner
 
@@ -90,14 +124,86 @@ def favicon():
 @app.route("/giris", methods=["GET", "POST"])
 def login():
     if not PASSWORD:
-        return redirect("/")
+        return redirect(_url("/"))
     err = False
     if request.method == "POST":
         if secrets.compare_digest(request.form.get("p", ""), PASSWORD):
             session["ok"] = True
-            return redirect("/")
+            return redirect(_url("/"))
         err = True
-    return render_template_string(_tpl("LOGIN"), err=err, app_name=APP_NAME, static_ver=static_ver())
+    return render_template_string(
+        _tpl("LOGIN"), err=err, app_name=APP_NAME, static_ver=static_ver(), base=URL_PREFIX,
+    )
+
+
+def _json_login():
+    if not PASSWORD:
+        session["ok"] = True
+        return jsonify({"ok": True})
+    d = request.get_json(silent=True) or {}
+    p = str(d.get("password") or "")
+    if secrets.compare_digest(p, PASSWORD):
+        session["ok"] = True
+        session.permanent = True
+        return jsonify({"ok": True})
+    return jsonify({"error": "yanlış parola"}), 401
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    """Mobil uygulama — JSON parola, oturum çerezi döner."""
+    return _json_login()
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.pop("ok", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/mobile/login", methods=["POST"])
+def api_mobile_login():
+    return _json_login()
+
+
+@app.route("/api/mobile/logout", methods=["POST"])
+def api_mobile_logout():
+    session.pop("ok", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/mobile/home")
+@guard
+def api_mobile_home():
+    return jsonify(api.mobile_home())
+
+
+@app.route("/api/mobile/live", methods=["POST"])
+@guard
+def api_mobile_live():
+    d = request.get_json(silent=True) or {}
+    if "on" not in d:
+        return jsonify({"error": "on alanı gerekli"}), 400
+    return jsonify(api.mobile_set_live(bool(d.get("on"))))
+
+
+@app.route("/api/mobile/settings")
+@guard
+def api_mobile_settings():
+    return jsonify(api.mobile_settings())
+
+
+@app.route("/api/mobile/settings/amounts", methods=["POST"])
+@guard
+def api_mobile_settings_amounts():
+    d = request.get_json(silent=True) or {}
+    try:
+        vals = [round(float(d[k]), 2) for k in ("low", "mid", "high")]
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "low/mid/high sayı olmalı"}), 400
+    if not all(1.0 <= v <= 500.0 for v in vals):
+        return jsonify({"error": "kademe $1–$500 aralığında olmalı"}), 400
+    return jsonify(api.mobile_save_amounts(*vals))
 
 
 @app.route("/")
@@ -143,7 +249,7 @@ def api_mirror_select():
 @guard
 def page(book: str):
     """Eski defter linkleri — tek sayfaya yönlendir."""
-    return redirect("/")
+    return redirect(_url("/"))
 
 
 @app.route("/api/active", methods=["POST"])
@@ -170,6 +276,22 @@ def api_weekend():
 @guard
 def api_redeem():
     return jsonify(api.cash_out_now())
+
+
+@app.route("/api/close-position", methods=["POST"])
+@guard
+def api_close_position():
+    d = request.get_json(silent=True) or {}
+    token_id = str(d.get("token_id") or "").strip()
+    source = str(d.get("source") or "").strip() or None
+    hour_tr = d.get("hour_tr")
+    if hour_tr is not None:
+        try:
+            hour_tr = int(hour_tr)
+        except (TypeError, ValueError):
+            hour_tr = None
+    res, status = api.manual_close_position(token_id, source=source, hour_tr=hour_tr)
+    return jsonify(res), status
 
 
 @app.route("/api/close-all", methods=["POST"])

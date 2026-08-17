@@ -2,10 +2,10 @@
 
 PAGE = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/coptc.css?v={{ static_ver }}">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }}</title>
 </head><body>
 <div class="app">
@@ -15,11 +15,11 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
       <div><div class="brand-name">CoptC</div><div class="brand-sub">Live Control</div></div>
     </div>
     <nav class="nav">
-      <a class="nav-item on" href="/">
+      <a class="nav-item on" href="{{ base }}/">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
         Dashboard
       </a>
-      <a class="nav-item" href="/ayarlar">
+      <a class="nav-item" href="{{ base }}/ayarlar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         Ayarlar
       </a>
@@ -45,6 +45,10 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
         <span class="pill" id="pill">—</span>
         <button class="btn" id="bsig">Sinyal çek</button>
         <button class="btn primary" id="bref">Yenile</button>
+      </div>
+      <div class="topbar-mobile">
+        <button type="button" class="btn btn-mlive danger" id="mLive">Live kapat</button>
+        <button type="button" class="btn btn-mset" id="mSet">Ayarlar</button>
       </div>
     </header>
 
@@ -73,12 +77,12 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
           {% endfor %}
         </div>
 
-        <div class="card">
+        <div class="card card-chart">
           <div class="card-hd"><span class="card-title">Saatlik performans</span><span class="mut" id="hsrc">—</span></div>
           <div class="chart-wrap" id="chart"></div>
         </div>
 
-        <div class="card">
+        <div class="card card-hist">
           <div class="card-hd"><span class="card-title">Son işlemler</span><span class="mut" id="tsrc">—</span></div>
           <div class="table-wrap"><table>
             <thead><tr><th>Sembol</th><th>Tahmin</th><th>Gerçek</th><th>Durum</th><th>P&amp;L</th><th>Zaman</th></tr></thead>
@@ -96,13 +100,13 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
         </div>
 
         <div class="quick-actions">
-          <div class="qa" onclick="location.href='/ayarlar'"><div class="qa-icon">⚙</div>Ayarlar</div>
+          <div class="qa" onclick="location.href=BASE+'/ayarlar'"><div class="qa-icon">⚙</div>Ayarlar</div>
           <div class="qa" id="qaLive"><div class="qa-icon">▶</div><span id="qaLiveTxt">Live</span></div>
           <div class="qa" id="bref2"><div class="qa-icon">↻</div>Yenile</div>
           <div class="qa" id="bsig2"><div class="qa-icon">📡</div>Sinyal</div>
         </div>
 
-        <div class="card">
+        <div class="card card-wl">
           <div class="card-hd"><span class="card-title">Win / Loss</span></div>
           <div class="donut-wrap">
             <div class="donut" id="donut"></div>
@@ -110,7 +114,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
           <div class="legend" id="legend"></div>
         </div>
 
-        <div class="card">
+        <div class="card card-cron">
           <div class="card-hd"><span class="card-title">Cron zamanları</span></div>
           <div class="timeline-list" id="tl"></div>
         </div>
@@ -121,11 +125,12 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
 
 <script>
 let BOOK = {{ book|tojson }};
+const BASE = {{ base|tojson }};
 let LIVE_ON = false;
 let HIST = [];
 let POS_N = 0;
 let CLOSING = false;
-const CLOSE_ALL_ENABLED = true;
+const CLOSE_ALL_ENABLED = false;
 const $ = id => document.getElementById(id);
 const money = v => v === null || v === undefined ? '—'
   : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -140,8 +145,15 @@ function posCard(p){
   const deltaTxt = delta == null ? '' :
     `<span class="${delta >= 0 ? 'g' : 'b'}">${delta >= 0 ? '+' : ''}${delta}</span>`;
   const winMark = win == null ? '' : `<span class="${win ? 'g' : 'b'}">${win ? '✓' : '✗'}</span>`;
-  const pnlTxt = p.close_pnl == null ? '—'
-    : (p.close_pnl >= 0 ? '+' : '') + p.close_pnl.toFixed(2) + '$';
+  const hasPnl = p.close_pnl != null && !p.no_liquidity;
+  const pnlCls = cls(p.close_pnl);
+  const pnlAmt = hasPnl
+    ? (p.close_pnl >= 0 ? '+' : '') + p.close_pnl.toFixed(2) + '$'
+    : '—';
+  const pnlPct = hasPnl && p.pnl_pct != null
+    ? (p.pnl_pct >= 0 ? '+' : '') + p.pnl_pct.toFixed(1) + '%'
+    : '';
+  const pnlHeroCls = p.no_liquidity ? 'na' : (!hasPnl ? 'flat' : (p.close_pnl > 0 ? 'up' : (p.close_pnl < 0 ? 'dn' : 'flat')));
   const badge = p.badge ? `<span class="ptag${p.book === BOOK ? ' me' : ''}">${p.badge}</span>` : '';
   const srcTag = p.source ? `<span class="ptag src">${p.source}</span>` : '';
   const dirCls = p.dir === 'UP' ? 'up' : (p.dir === 'DOWN' ? 'dn' : '');
@@ -150,12 +162,28 @@ function posCard(p){
       <span class="tag ${p.dir === 'UP' ? 'up' : 'dn'}">${dirTr}</span></div>
     <div class="ppx">${fmtSpot(p.spot_now)} ${winMark} ${deltaTxt}</div>
     <div class="pmeta">Giriş $${p.entry ?? '—'} · Slot ${p.slot || '—'}</div>
+    <div class="pnl-hero ${pnlHeroCls}">
+      <div class="pnl-hero-k">Anlık kâr/zarar</div>
+      <div class="pnl-hero-row">
+        <span class="pnl-hero-amt ${pnlCls}">${pnlAmt}</span>
+        ${pnlPct ? `<span class="pnl-hero-pct ${pnlCls}">${pnlPct}</span>` : ''}
+      </div>
+      ${p.no_liquidity ? '<div class="pnl-hero-note">Piyasada alıcı yok — satış değeri hesaplanamıyor</div>' : ''}
+    </div>
     <div class="pclose"><div><div class="risk-k">Anlık kapatma</div>
       <div class="mut" style="font-size:11px">${p.no_liquidity ? 'alıcı yok' : ('token ' + (p.token_bid ?? '—'))}</div></div>
-      <div class="risk-v ${cls(p.close_pnl)}">${p.no_liquidity ? '—' : money(p.close_val)}</div></div>
+      <div class="risk-v">${p.no_liquidity ? '—' : money(p.close_val)}</div></div>
     <div class="pfoot">
-      <span>Risk <b>${money(p.spent)}</b> · Anlık <b class="${cls(p.close_pnl)}">${pnlTxt}</b></span>
-      <span>Kazanırsa <b class="g">${money(p.to_win)}</b></span></div></div>`;
+      <span>Risk <b>${money(p.spent)}</b></span>
+      <span>Kazanırsa <b class="g">${money(p.to_win)}</b></span></div>
+    <button type="button" class="btn danger btn-sm pclose-btn"
+      data-symbol="${p.symbol}"
+      data-token="${p.token_id || ''}"
+      data-source="${p.source_book || ''}"
+      data-hour="${p.entry_hour ?? ''}"
+      data-pnl="${hasPnl ? p.close_pnl.toFixed(2) : ''}"
+      ${(!p.token_id || p.no_liquidity || !CLOSE_ALL_ENABLED) ? 'disabled' : ''}
+      ${p.no_liquidity ? 'title="Piyasada alıcı yok"' : ''}>Manuel kapat</button></div>`;
 }
 
 function clock(){
@@ -244,6 +272,12 @@ function render(d){
   $('pill').textContent = !d.live_on ? 'LIVE KAPALI' : (wkPause ? 'HAFTA SONU' : 'LIVE AÇIK');
   $('pill').className = 'pill' + (d.live_on && !wkPause ? ' on' : '');
   $('qaLiveTxt').textContent = d.live_on ? 'Live ✓' : 'Live ✗';
+  $('qaLive').className = 'qa' + (d.live_on ? ' on' : '');
+  const mLive = $('mLive');
+  if (mLive) {
+    mLive.textContent = d.live_on ? 'Live kapat' : 'Live aç';
+    mLive.className = 'btn btn-mlive ' + (d.live_on ? 'danger' : 'success');
+  }
 
   const r = d.risk;
   const pnlCls = d.live_pnl > 0 ? ' pos' : (d.live_pnl < 0 ? ' neg' : '');
@@ -285,6 +319,12 @@ function render(d){
   $('wpmsub').textContent = d.equity != null
     ? `Anlık toplam ${money(d.equity)} · serbest USDC`
     : (d.cash === null ? 'cüzdan tanımsız' : 'Serbest USDC');
+  const wc = document.querySelector('.wallet-card');
+  const walletTotal = d.cash != null ? d.cash : d.equity;
+  if (wc) {
+    wc.classList.toggle('ok', walletTotal != null && walletTotal > 1000);
+    wc.classList.toggle('warn', walletTotal != null && walletTotal <= 1000);
+  }
   $('wsrc').textContent = d.live_on
     ? `${d.mirror_short || d.mirror_book || '—'} aynası · PM emri açık`
     : 'Live kapalı';
@@ -322,8 +362,8 @@ function render(d){
 
 async function load(){
   try{
-    const r = await fetch('/api/overview', {cache:'no-store'});
-    if (r.status === 401) return location.href = '/giris';
+    const r = await fetch(BASE + '/api/overview', {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
     const d = await r.json();
     if (!d || !d.models) throw new Error(d?.error || 'veri alınamadı');
     render(d);
@@ -335,7 +375,7 @@ async function load(){
 async function signals(){
   $('bsig').disabled = true; $('bsig2').style.opacity = '.5';
   try{
-    const r = await fetch(`/api/${BOOK}/signals`);
+    const r = await fetch(BASE + `/api/${BOOK}/signals`);
     renderSyms(await r.json());
   } finally {
     $('bsig').disabled = false; $('bsig2').style.opacity = '1';
@@ -346,14 +386,28 @@ $('bref').onclick = () => load().then(signals);
 $('bref2').onclick = $('bref').onclick;
 $('bsig').onclick = signals;
 $('bsig2').onclick = signals;
-$('qaLive').onclick = () => location.href = '/ayarlar';
+async function toggleLive(){
+  const on = !LIVE_ON;
+  if (on && !confirm('GERÇEK PARA — bir sonraki slotta PM emri açılacak. Onay?')) return;
+  const btn = $('mLive');
+  if (btn) btn.disabled = true;
+  try {
+    await fetch(BASE + '/api/active', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({book:BOOK, on})});
+    await load();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+if ($('mLive')) $('mLive').onclick = toggleLive;
+if ($('mSet')) $('mSet').onclick = () => location.href = BASE + '/ayarlar';
+$('qaLive').onclick = toggleLive;
 $('qhist').oninput = e => renderHist(e.target.value);
 
 async function cashOut(){
   const foot = $('redeemFoot');
   if (foot) foot.textContent = 'Nakde çevriliyor…';
   try{
-    const r = await fetch('/api/redeem', {method:'POST'});
+    const r = await fetch(BASE + '/api/redeem', {method:'POST'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Başarısız');
     await load();
@@ -364,6 +418,37 @@ async function cashOut(){
 const rs0 = $('redeemStat');
 if (rs0) rs0.onclick = cashOut;
 
+async function closeOne(btn){
+  if (!CLOSE_ALL_ENABLED || CLOSING || btn.disabled) return;
+  const sym = btn.dataset.symbol || '?';
+  const pnl = btn.dataset.pnl;
+  const pnlTxt = pnl ? ((Number(pnl) >= 0 ? '+' : '') + Number(pnl).toFixed(2) + '$') : '—';
+  if (!confirm(`${sym} pozisyonu piyasa fiyatından satılacak.\nAnlık kâr/zarar: ${pnlTxt}\nGeri alınamaz — onaylıyor musun?`)) return;
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = 'Kapatılıyor…';
+  try{
+    const r = await fetch(BASE + '/api/close-position', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        token_id: btn.dataset.token,
+        source: btn.dataset.source || null,
+        hour_tr: btn.dataset.hour === '' ? null : Number(btn.dataset.hour),
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Başarısız');
+    const net = (d.pnl > 0 ? '+' : '') + money(d.pnl);
+    alert(`${sym} kapatıldı · ${net}`);
+    await load();
+  } catch(e){
+    alert(`${sym} kapatılamadı: ` + e.message);
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
 async function closeAll(){
   if (!CLOSE_ALL_ENABLED) return;
   if (CLOSING) return;
@@ -373,7 +458,7 @@ async function closeAll(){
   b.disabled = true;
   b.textContent = 'Kapatılıyor…';
   try{
-    const r = await fetch('/api/close-all', {method:'POST'});
+    const r = await fetch(BASE + '/api/close-all', {method:'POST'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Başarısız');
     const pnl = (d.pnl > 0 ? '+' : '') + money(d.pnl);
@@ -387,16 +472,21 @@ async function closeAll(){
 }
 $('bcloseall').onclick = closeAll;
 
+$('posSection').addEventListener('click', e => {
+  const btn = e.target.closest('.pclose-btn');
+  if (btn) closeOne(btn);
+});
+
 load().then(signals);
 setInterval(load, 30000);
 </script></body></html>"""
 
 SETTINGS = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/coptc.css?v={{ static_ver }}">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Ayarlar</title>
 </head><body>
 <div class="app">
@@ -406,11 +496,11 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
       <div><div class="brand-name">CoptC</div><div class="brand-sub">Live Control</div></div>
     </div>
     <nav class="nav">
-      <a class="nav-item" href="/">
+      <a class="nav-item" href="{{ base }}/">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
         Dashboard
       </a>
-      <a class="nav-item on" href="/ayarlar">
+      <a class="nav-item on" href="{{ base }}/ayarlar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         Ayarlar
       </a>
@@ -512,6 +602,7 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
 
 <script>
 let BOOK = {{ book|tojson }};
+const BASE = {{ base|tojson }};
 let LIVE_ON = false, ROWS = [], WEEKEND_ON = false, COLD_CUT_ON = false;
 // MIRROR = kayıtlı seçim, PICK = henüz kaydedilmemiş seçim (null = hiç dokunulmadı)
 let MIRROR = [], PICK = null;
@@ -540,12 +631,12 @@ async function toggleWeekend(){
   $('bweekend').disabled = true;
   $('bweekend').textContent = 'Kaydediliyor…';
   try{
-    const r = await fetch('/api/weekend', {
+    const r = await fetch(BASE + '/api/weekend', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({enabled: on}),
     });
-    if (r.status === 401) return location.href = '/giris';
+    if (r.status === 401) return location.href = BASE + '/giris';
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Kaydedilemedi');
     renderWeekend(d);
@@ -599,14 +690,14 @@ async function toggleColdCut(){
   $('bcoldcut').disabled = true;
   $('bcoldcut').textContent = 'Kaydediliyor…';
   try{
-    const r = await fetch(`/api/${BOOK}/amounts`, {
+    const r = await fetch(BASE + `/api/${BOOK}/amounts`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         low: +$('alow').value, mid: +$('amid').value, high: +$('ahigh').value,
         cold_hour_cut_enabled: on,
       }),
     });
-    if (r.status === 401) return location.href = '/giris';
+    if (r.status === 401) return location.href = BASE + '/giris';
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Kaydedilemedi');
     renderColdCut(d.cold_hour_cut_enabled);
@@ -621,8 +712,8 @@ async function toggleColdCut(){
 }
 
 async function load(){
-  const r = await fetch('/api/overview', {cache:'no-store'});
-  if (r.status === 401) return location.href = '/giris';
+  const r = await fetch(BASE + '/api/overview', {cache:'no-store'});
+  if (r.status === 401) return location.href = BASE + '/giris';
   render(await r.json());
 }
 
@@ -690,7 +781,7 @@ function toggle(book){
 async function loadMirror(){
   $('brel').disabled = true;
   try{
-    const r = await fetch('/api/mirror/books', {cache:'no-store'});
+    const r = await fetch(BASE + '/api/mirror/books', {cache:'no-store'});
     const d = await r.json();
     if (d.error && !(d.books||[]).length){ $('mlist').innerHTML = `<div class="empty werr">${d.error}</div>`; return; }
     ROWS = d.books||[]; setSaved(d.selected); drawMirror();
@@ -706,11 +797,11 @@ async function saveMirror(){
     + `pozisyonunu açacak. Devam?`)) return;
   $('msave').disabled = true;
   try{
-    const r = await fetch('/api/mirror/select', {
+    const r = await fetch(BASE + '/api/mirror/select', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({books: list}),
     });
-    if (r.status === 401) return location.href = '/giris';
+    if (r.status === 401) return location.href = BASE + '/giris';
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Kaydedilemedi');
     MIRROR = d.selected || list; PICK = MIRROR.slice();
@@ -729,12 +820,12 @@ $('blive').onclick = async () => {
   const on = !LIVE_ON;
   if (on && !confirm(`GERÇEK PARA — ${MIRROR.map(bookName).join(' + ')||'kaynak'} bir sonraki slotta PM emri açacak. Onay?`)) return;
   $('blive').disabled = true;
-  await fetch('/api/active', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({book:BOOK, on})});
+  await fetch(BASE + '/api/active', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({book:BOOK, on})});
   $('blive').disabled = false; load();
 };
 $('bsave').onclick = async () => {
   $('bsave').disabled = true;
-  const r = await fetch(`/api/${BOOK}/amounts`, {method:'POST', headers:{'Content-Type':'application/json'},
+  const r = await fetch(BASE + `/api/${BOOK}/amounts`, {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
       low: +$('alow').value, mid: +$('amid').value, high: +$('ahigh').value,
       cold_hour_cut_enabled: COLD_CUT_ON,
@@ -755,14 +846,14 @@ function renderWd(w){
     `<div class="pcard" style="margin-top:8px;padding:10px 14px"><span class="mut">${String(h.ts).slice(5,16)}</span>
      <b>${money(h.amount)}</b> → <span class="mono">${short(h.to)}</span></div>`).join('');
 }
-async function loadWd(){ const r = await fetch('/api/withdraw/info'); if (r.ok) renderWd(await r.json()); }
+async function loadWd(){ const r = await fetch(BASE + '/api/withdraw/info'); if (r.ok) renderWd(await r.json()); }
 $('wsend').onclick = async () => {
   const to=$('wto').value.trim(), amt=+$('wamt').value, code=$('wcode').value;
   if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return $('wmsg').innerHTML='<span class="werr">Geçersiz adres</span>';
   if (!(amt>0)||!code) return $('wmsg').innerHTML='<span class="werr">Tutar ve kod gerekli</span>';
   if (!confirm(`GERİ ALINAMAZ — ${money(amt)} → ${to.slice(0,10)}…`)) return;
   $('wsend').disabled=true;
-  const r=await fetch('/api/withdraw/send',{method:'POST',headers:{'Content-Type':'application/json'},
+  const r=await fetch(BASE + '/api/withdraw/send',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({to,amount:amt,code,token:$('wtok').value})});
   const d=await r.json();
   $('wmsg').innerHTML=r.ok&&!d.error?`<span class="wok">Gönderildi</span>`:`<span class="werr">${d.error||'Hata'}</span>`;
@@ -771,8 +862,8 @@ $('wsend').onclick = async () => {
 async function signals(){
   $('bsig').disabled = true;
   try{
-    const r = await fetch(`/api/${BOOK}/signals`, {cache:'no-store'});
-    if (r.status === 401) return location.href = '/giris';
+    const r = await fetch(BASE + `/api/${BOOK}/signals`, {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
     if (!r.ok) throw new Error('Sinyal alınamadı');
     $('lvhint').textContent = 'Sinyaller güncellendi — ' + new Date().toLocaleTimeString('tr-TR');
   } catch(e){
@@ -786,10 +877,10 @@ load(); loadMirror(); loadWd(); setInterval(loadMirror, 60000); setInterval(load
 
 LOGIN = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/coptc.css?v={{ static_ver }}">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }}</title></head>
 <body class="login-page">
 <form class="login-box" method="post">

@@ -470,6 +470,9 @@ def _position_row(p: dict, spot_map: dict[str, float | None]) -> dict:
         "winning": winning,
         "token_bid": token_bid,
         "no_liquidity": no_liquidity,
+        "token_id": p.get("pm_token_id"),
+        "source_book": p.get("mirrored_from_source"),
+        "entry_hour": p.get("entry_hour_tr"),
         "live": bool(p.get("pm_token_id")),
     }
 
@@ -802,7 +805,7 @@ def cash_out_now() -> dict:
 
 
 _OPEN_LOCK = os.path.join(_POLY, ".coptc_open.lock")
-_MANUAL_CLOSE_ALL_ENABLED = True
+_MANUAL_CLOSE_ALL_ENABLED = False
 
 
 def manual_close_all() -> tuple[dict, int]:
@@ -835,6 +838,47 @@ def manual_close_all() -> tuple[dict, int]:
             fcntl.flock(f, fcntl.LOCK_UN)
 
     return res, 200
+
+
+def manual_close_position(
+    token_id: str,
+    *,
+    source: str | None = None,
+    hour_tr: int | None = None,
+) -> tuple[dict, int]:
+    """Tek açık pozisyonu piyasa fiyatından sat."""
+    if not _MANUAL_CLOSE_ALL_ENABLED:
+        return {"error": "Manuel kapatma panelden kapalı"}, 403
+    if not token_id:
+        return {"error": "token_id gerekli"}, 400
+    import fcntl
+
+    opens = [p for p in state(BOOKS["live"]["live"]).get("open_positions") or [] if _is_real_pm(p)]
+    if not opens:
+        return {"error": "Açık pozisyon yok"}, 400
+
+    with open(_OPEN_LOCK, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"error": "Açılış turu sürüyor — birkaç saniye sonra tekrar dene"}, 409
+        try:
+            import coptc_live_core as core
+            from coptc_live import SPEC
+            res = core.run_manual_close(
+                SPEC, token_id=token_id, source=source, hour_tr=hour_tr,
+            )
+        except Exception as e:
+            print(f"[CoptC-dashboard] tek pozisyon kapatma: {e}", file=sys.stderr)
+            return {"error": str(e)[:200]}, 500
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+    if res.get("closed"):
+        return res, 200
+    if res.get("failed"):
+        return res, 502
+    return res, 404
 
 
 def open_positions_all() -> tuple[list[dict], dict]:
@@ -932,3 +976,125 @@ def overview(book: str) -> dict:
         "risk": all_risk,
         "redeem_pending": pm.get("redeem_pending", 0.0),
     }
+
+
+# ── mobil uygulama sözleşmesi ────────────────────────────────────
+
+def _money_tr(v) -> str:
+    if v is None:
+        return "—"
+    n = float(v)
+    sign = "-" if n < 0 else ""
+    whole, frac = f"{abs(n):.2f}".split(".")
+    groups: list[str] = []
+    while whole:
+        groups.append(whole[-3:])
+        whole = whole[:-3]
+    return f"{sign}${'.'.join(reversed(groups))},{frac}"
+
+
+def mobile_live(book: str | None = None) -> dict:
+    book = book or active_book()
+    on = live_on()
+    return {
+        "on": on,
+        "book": book,
+        "label": "Live açık" if on else "Live kapalı",
+    }
+
+
+def mobile_home() -> dict:
+    """iOS ana ekran: live + cüzdan + açık pozisyonlar + son işlemler."""
+    book = active_book()
+    o = overview(book)
+    cash = o.get("cash")
+    equity = o.get("equity")
+    on = bool(o.get("live_on"))
+    src = o.get("mirror_short") or o.get("mirror_book") or "—"
+    footer = f"{src} aynası · PM emri açık" if on else "Live kapalı"
+    if equity is not None:
+        subtitle = f"Anlık toplam {_money_tr(equity)} · serbest USDC"
+    elif cash is None:
+        subtitle = "cüzdan tanımsız"
+    else:
+        subtitle = "Serbest USDC"
+    ring = None
+    if cash is not None:
+        ring = round(min(1.0, max(0.0, float(cash) / 1000.0)), 3)
+    positions = []
+    for p in o.get("positions") or []:
+        positions.append({
+            "id": p.get("token_id") or f"{p.get('symbol')}-{p.get('slot')}",
+            "symbol": p.get("symbol"),
+            "dir": p.get("dir"),
+            "dir_label": "YÜKSELİR" if p.get("dir") == "UP" else "DÜŞER",
+            "badge": p.get("badge") or "",
+            "source": p.get("source") or "",
+            "slot": p.get("slot") or "",
+            "entry": p.get("entry"),
+            "spot_now": p.get("spot_now"),
+            "spot_diff": p.get("spot_diff"),
+            "close_pnl": p.get("close_pnl"),
+            "pnl_pct": p.get("pnl_pct"),
+            "close_val": p.get("close_val"),
+            "spent": p.get("spent"),
+            "to_win": p.get("to_win"),
+            "no_liquidity": bool(p.get("no_liquidity")),
+        })
+    return {
+        "live": mobile_live(book),
+        "wallet": {
+            "label": "POLYMARKET",
+            "cash": cash,
+            "equity": equity,
+            "cash_text": _money_tr(cash),
+            "subtitle": subtitle,
+            "footer": footer,
+            "warn": cash is not None and float(cash) <= 1000,
+            "ring_pct": ring,
+            "ring_text": f"{int(round(ring * 100))}%" if ring is not None else "—",
+        },
+        "positions": positions,
+        "history": [
+            {
+                "symbol": t.get("symbol"),
+                "pred": t.get("pred"),
+                "actual": t.get("actual"),
+                "win": bool(t.get("win")),
+                "pnl": t.get("pnl"),
+                "time": t.get("time"),
+            }
+            for t in (o.get("history") or [])
+        ],
+    }
+
+
+def mobile_settings() -> dict:
+    """iOS ayarlar: giriş tutarlarını manuel girme."""
+    book = active_book()
+    a = amounts(book)
+    return {
+        "book": book,
+        "amounts": {
+            "low": a["low"],
+            "mid": a["mid"],
+            "high": a["high"],
+        },
+        "min": 1.0,
+        "max": 500.0,
+        "labels": {
+            "low": "Low (WR < 50%)",
+            "mid": "Mid",
+            "high": "High",
+        },
+    }
+
+
+def mobile_save_amounts(low: float, mid: float, high: float) -> dict:
+    save_amounts(active_book(), low, mid, high)
+    return mobile_settings()
+
+
+def mobile_set_live(on: bool) -> dict:
+    set_active(active_book(), on)
+    return {"live": mobile_live()}
