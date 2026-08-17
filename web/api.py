@@ -806,6 +806,7 @@ def cash_out_now() -> dict:
 
 _OPEN_LOCK = os.path.join(_POLY, ".coptc_open.lock")
 _MANUAL_CLOSE_ALL_ENABLED = False
+_MANUAL_CLOSE_ONE_ENABLED = False
 
 
 def manual_close_all() -> tuple[dict, int]:
@@ -847,7 +848,7 @@ def manual_close_position(
     hour_tr: int | None = None,
 ) -> tuple[dict, int]:
     """Tek açık pozisyonu piyasa fiyatından sat."""
-    if not _MANUAL_CLOSE_ALL_ENABLED:
+    if not _MANUAL_CLOSE_ONE_ENABLED:
         return {"error": "Manuel kapatma panelden kapalı"}, 403
     if not token_id:
         return {"error": "token_id gerekli"}, 400
@@ -1039,6 +1040,8 @@ def mobile_home() -> dict:
             "close_val": p.get("close_val"),
             "spent": p.get("spent"),
             "to_win": p.get("to_win"),
+            "token_bid": p.get("token_bid"),
+            "winning": p.get("winning"),
             "no_liquidity": bool(p.get("no_liquidity")),
         })
     return {

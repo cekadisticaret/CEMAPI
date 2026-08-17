@@ -48,10 +48,12 @@ struct Position: Codable, Identifiable {
     let closeVal: Double?
     let spent: Double
     let toWin: Double?
+    let tokenBid: Double?
+    let winning: Bool?
     let noLiquidity: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, symbol, dir, badge, source, slot, entry, spent
+        case id, symbol, dir, badge, source, slot, entry, spent, winning
         case dirLabel = "dir_label"
         case spotNow = "spot_now"
         case spotDiff = "spot_diff"
@@ -59,6 +61,7 @@ struct Position: Codable, Identifiable {
         case pnlPct = "pnl_pct"
         case closeVal = "close_val"
         case toWin = "to_win"
+        case tokenBid = "token_bid"
         case noLiquidity = "no_liquidity"
     }
 }

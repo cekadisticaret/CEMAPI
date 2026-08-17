@@ -129,7 +129,7 @@ struct DashboardView: View {
                         .foregroundStyle(Theme.mut)
                 }
             } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                VStack(spacing: 12) {
                     ForEach(positions) { PositionCardView(position: $0) }
                 }
             }
