@@ -26,9 +26,13 @@ workflows:
         script: |
           cd ios
           BUILD_VER="$(date +%s)"
-          echo "CFBundleVersion=$BUILD_VER"
-          sed -i '' "s/CURRENT_PROJECT_VERSION: \".*\"/CURRENT_PROJECT_VERSION: \"${BUILD_VER}\"/" project.yml
+          echo "Using version 1.0.1 ($BUILD_VER)"
           xcodegen generate
+          sed -i '' "s/CURRENT_PROJECT_VERSION = .*/CURRENT_PROJECT_VERSION = ${BUILD_VER};/g" CoptC.xcodeproj/project.pbxproj
+          sed -i '' "s/MARKETING_VERSION = .*/MARKETING_VERSION = 1.0.1;/g" CoptC.xcodeproj/project.pbxproj
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.1" CoptC/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VER" CoptC/Info.plist
+          echo "plist version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' CoptC/Info.plist) build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' CoptC/Info.plist)"
       - name: Set up keychain
         script: keychain initialize
       - name: Fetch signing files
