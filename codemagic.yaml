@@ -11,7 +11,7 @@ workflows:
       vars:
         BUNDLE_ID: tr.deadella.coptc
         XCODE_SCHEME: CoptC
-      xcode: 16.4
+      xcode: latest
     triggering:
       events:
         - push
