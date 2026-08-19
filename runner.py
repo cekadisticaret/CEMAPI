@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """CoptC Live Control — API mirror tek giriş noktası.
 
-Live AÇIK: :05:10–:08:00 arası 10 sn'de bir kaynak API → PM mirror.
+Live AÇIK: :02:08–:08:00 arası 10 sn'de bir kaynak API → PM mirror.
+A2#05 / V2 :02 açar; A1 (analiz1) :05 açar — poll ikisini de kapsar.
 Live KAPALI: işlem açılmaz.
 
 Modlar
-    close       :02   live kapat + redeem
-    open        :05   live-open ile aynı (geriye uyumluluk)
-    live-open   :05   :05:10…:08:00 API poll + mirror
+    close       :01   live kapat + redeem
+    open        :02   live-open ile aynı
+    live-open   :02   :02:08…:08:00 API poll + mirror
     settle      :12   live kapanış tekrarı
     status             live defter özeti
 """
@@ -107,10 +108,14 @@ def _stamp(mode: str) -> None:
 
 
 def _mirror_poll_window(now_tr: datetime | None = None) -> tuple[datetime, datetime]:
-    """Bu saatin mirror poll penceresi: :05:10 … :08:00."""
+    """Bu saatin mirror poll penceresi: :02:08 … :08:00.
+
+    A2#05/V2 :02 açar; analiz1 (A1) :05 açar. Eski tavan :05:00 A1'i
+    tam açıldığı anda kesiyordu.
+    """
     now_tr = now_tr or datetime.now(_TZ)
     base = now_tr.replace(minute=0, second=0, microsecond=0)
-    return base.replace(minute=5, second=10), base.replace(minute=8, second=0)
+    return base.replace(minute=2, second=8), base.replace(minute=8, second=0)
 
 
 def _wait_until(target: datetime) -> None:

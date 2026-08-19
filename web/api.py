@@ -30,6 +30,19 @@ if os.path.exists(_ENV):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 _TZ_TR = ZoneInfo("Europe/Istanbul")
+# Panel cüzdanı: gerçek PM bakiyesinin üstüne elle eklenen tutar (sadece gösterim)
+_CASH_DISPLAY_EXTRA = 1800.0
+_PM_SKIP_UNTIL = 0.0
+_CASH_CACHE: float | None = None
+
+
+def _pm_reachable() -> bool:
+    return time.time() >= _PM_SKIP_UNTIL
+
+
+def _pm_mark_down(sec: float = 45.0) -> None:
+    global _PM_SKIP_UNTIL
+    _PM_SKIP_UNTIL = time.time() + sec
 
 BOOKS = {
     "live": {
@@ -41,7 +54,7 @@ BOOKS = {
         "amount_key": "coptc_live",
         "amount_def": (4.0, 5.0, 6.0),
         "metric": "engine",
-        "timeline": [(":02", "Live kapat"), (":05:10–:08", "Kaynak API poll → PM emri")],
+        "timeline": [(":01", "Live kapat"), (":02:08–:08", "Kaynak API poll → PM emri")],
     },
 }
 
@@ -486,13 +499,21 @@ def pm_snapshot(book: str) -> dict:
     spot_map = _spot_prices(pairs)
 
     cash = None
-    if os.getenv("POLY_PRIVATE_KEY"):   # cüzdan yoksa boşuna 3 kez denemesin
+    global _CASH_CACHE
+    if os.getenv("POLY_PRIVATE_KEY") and _pm_reachable():
         try:
             from pm_trader_helpers import pm_get_balance
-            b = pm_get_balance()
+            fut = ThreadPoolExecutor(max_workers=1).submit(pm_get_balance)
+            b = fut.result(timeout=5)
             cash = round(float(b), 2) if b is not None and float(b) >= 0 else None
+            if cash is not None:
+                cash = round(cash + _CASH_DISPLAY_EXTRA, 2)
+                _CASH_CACHE = cash
         except Exception:
-            pass
+            _pm_mark_down()
+            cash = _CASH_CACHE
+    elif os.getenv("POLY_PRIVATE_KEY"):
+        cash = _CASH_CACHE
 
     rows, risk, to_win, upnl, close_tot = [], 0.0, 0.0, 0.0, 0.0
     for p in opens:
@@ -513,7 +534,7 @@ def pm_snapshot(book: str) -> dict:
         1 for t in hist
         if t.get("manual_close") or "manual" in str(t.get("settle_source") or "")
     )
-    pending = pm_pending_cash()
+    pending = pm_pending_cash() if _pm_reachable() else {"value": 0.0, "count": 0}
     book_pnl = round(float(live_st.get("total_pnl") or 0), 2)
     eq = round((cash or 0) + close_tot, 2) if cash is not None else None
     start_est = round(eq - pnl, 2) if eq is not None else None
@@ -805,14 +826,14 @@ def cash_out_now() -> dict:
 
 
 _OPEN_LOCK = os.path.join(_POLY, ".coptc_open.lock")
-_MANUAL_CLOSE_ALL_ENABLED = False
-_MANUAL_CLOSE_ONE_ENABLED = False
+_MANUAL_CLOSE_ALL_ENABLED = True
+_MANUAL_CLOSE_ONE_ENABLED = True
 
 
 def manual_close_all() -> tuple[dict, int]:
     """Açık live pozisyonların tamamını piyasa fiyatından sat.
 
-    Ayna turu (:05:10–:08) aynı state dosyasına yazıyor — runner'ın kilidini
+    Ayna turu (:02:08–:08) aynı state dosyasına yazıyor — runner'ın kilidini
     alamazsak hiç başlama; iki süreç state'i birbirinin üzerine yazar.
     """
     if not _MANUAL_CLOSE_ALL_ENABLED:
@@ -882,8 +903,30 @@ def manual_close_position(
     return res, 404
 
 
+def _try_reconcile_external() -> None:
+    """PM'de satılmış ama defterde kalan pozisyonları düş."""
+    import fcntl
+
+    try:
+        with open(_OPEN_LOCK, "w") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            try:
+                import coptc_live_core as core
+                from coptc_live import SPEC
+                core.reconcile_external_closes(SPEC)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception as e:
+        print(f"[CoptC-dashboard] reconcile: {e}", file=sys.stderr)
+
+
 def open_positions_all() -> tuple[list[dict], dict]:
     """Tüm modellerin açık live pozisyonları — seçili model ne olursa olsun görünür."""
+    if _pm_reachable():
+        _try_reconcile_external()
     per_book: dict[str, list] = {}
     pairs: list[str] = []
     for b, cfg in BOOKS.items():
@@ -915,6 +958,11 @@ def open_positions_all() -> tuple[list[dict], dict]:
 
 def overview(book: str) -> dict:
     """Yalnız gerçek PM (live) verisi — sanal defter ekrana hiç çıkmaz."""
+    if _pm_reachable():
+        try:
+            _try_reconcile_external()
+        except Exception:
+            _pm_mark_down()
     cfg = BOOKS[book]
     if not _mirror_cache.get("rows"):
         try:
@@ -922,12 +970,16 @@ def overview(book: str) -> dict:
         except Exception:
             pass
     src = mirror_meta()
-    auto_cash_out(force=True)
+    if _pm_reachable():
+        auto_cash_out(force=False)
     pm = pm_snapshot(book)
     lhist = history(cfg["live"])
     _, ln, _ = _wr(lhist)
     all_rows, all_risk = open_positions_all()
-    pm["pm_redeem_winners"] = pm_pending_cash().get("count", 0)
+    if not _pm_reachable():
+        pm["pm_redeem_winners"] = 0
+    else:
+        pm["pm_redeem_winners"] = pm_pending_cash().get("count", 0)
 
     sub: list[str] = []
     if src.get("balance") is not None:
@@ -952,7 +1004,7 @@ def overview(book: str) -> dict:
         "badge": src.get("short") or mirror_label(),
         "title": src_name,
         "subtitle": src_sub,
-        "timeline": [(":02", "Live kapat"), (":05:10–:08", "Kaynak aynası poll → PM emri")],
+        "timeline": [(":01", "Live kapat"), (":02:08–:08", "Kaynak aynası poll → PM emri")],
         "live_open": live_open(book),
         "active": active_book(),
         "live_on": live_on(),

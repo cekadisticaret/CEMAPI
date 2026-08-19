@@ -234,6 +234,7 @@ async def run_close(spec: LiveSpec) -> None:
     now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
     if skip_if_weekend_pause(spec.label, "close", now_tr):
         return
+    reconcile_external_closes(spec)
     state = load_state(spec)
     history = load_history(spec)
     if not state["open_positions"]:
@@ -376,11 +377,47 @@ def run_manual_close(
             if sz >= 0.01:
                 sell_size = sz
 
-        res = pm_sell_position(str(tid), sell_size, label=spec.label)
+        held = -1.0
+        if tid:
+            try:
+                held = pmh.pm_conditional_shares(str(tid))
+            except Exception:
+                held = -1.0
+        if tid and held >= 0 and held < 0.5:
+            fill = pmh.pm_recent_sell(str(tid))
+            res = {
+                "order_id": "external",
+                "size": float(fill["size"]) if fill else 0.0,
+                "price": float(fill["price"]) if fill else 0.0,
+                "proceeds": float(fill["proceeds"]) if fill else 0.0,
+                "external": True,
+            }
+        else:
+            res = pm_sell_position(str(tid), sell_size, label=spec.label)
         if not res:
             failed += 1
             kalan.append(pos)
             print(f"[{spec.label} manuel] {_sym_short(sym)} satılamadı", file=sys.stderr)
+            continue
+
+        leftover = res.get("remaining")
+        if leftover is None and tid:
+            try:
+                leftover = pmh.pm_conditional_shares(str(tid))
+            except Exception:
+                leftover = -1.0
+        if leftover is not None and leftover >= 0.5:
+            old_sz = float(pos.get("pm_size") or 0)
+            old_spent = float(pos.get("pm_spent") or pos.get("amount") or 0)
+            pos["pm_size"] = leftover
+            if old_sz > 0:
+                pos["pm_spent"] = round(old_spent * leftover / old_sz, 2)
+            kalan.append(pos)
+            print(
+                f"[{spec.label} manuel] {_sym_short(sym)} kısmi satış — "
+                f"{leftover:g} share duruyor, defterde kaldı",
+                file=sys.stderr,
+            )
             continue
 
         spent = float(pos.get("pm_spent") or pos.get("amount") or 0)
@@ -410,7 +447,9 @@ def run_manual_close(
             "pm_slug": pos.get("pm_slug"),
             "algo_name": pos.get("algo_name", spec.algo_name),
             "algo_num": 0,
-            "settle_source": "manual_sell",
+            "settle_source": "pm_external_close" if res.get("external") else "manual_sell",
+            "source_position_id": pos.get("source_position_id"),
+            "mirrored_from_source": pos.get("mirrored_from_source"),
         })
         lines.append(
             f"{'✅' if pnl >= 0 else '❌'} {_sym_short(sym)}  {res['size']} share "
@@ -436,6 +475,105 @@ def run_manual_close(
     elif targeted and closed == 0:
         out["error"] = "Pozisyon bulunamadı"
     return out
+
+
+def _source_id_in_history(history: list, source_id: str) -> bool:
+    sid = str(source_id or "")
+    if not sid:
+        return False
+    for t in reversed(history[-300:]):
+        if str(t.get("source_position_id") or "") == sid:
+            return True
+    return False
+
+
+def reconcile_external_closes(spec: LiveSpec) -> dict:
+    """Defterde açık, zincirde share yok → PM tarafında satılmış say."""
+    import pm_trader_helpers as pmh
+
+    state = load_state(spec)
+    opens = list(state.get("open_positions") or [])
+    if not opens:
+        return {"closed": 0, "pnl": 0.0}
+
+    history = load_history(spec)
+    now_tr = datetime.now(timezone.utc).astimezone(_TZ_TR)
+    kalan: list[dict] = []
+    lines: list[str] = []
+    closed = 0
+    tur_pnl = 0.0
+
+    for pos in opens:
+        tid = pos.get("pm_token_id")
+        if not tid:
+            kalan.append(pos)
+            continue
+        try:
+            held = pmh.pm_conditional_shares(str(tid))
+        except Exception:
+            kalan.append(pos)
+            continue
+        if held < 0 or held >= 0.5:
+            kalan.append(pos)
+            continue
+
+        fill = pmh.pm_recent_sell(str(tid))
+        spent = float(pos.get("pm_spent") or pos.get("amount") or 0)
+        proceeds = float(fill["proceeds"]) if fill else 0.0
+        price = float(fill["price"]) if fill else 0.0
+        size = float(fill["size"]) if fill else float(pos.get("pm_size") or 0)
+        pnl = round(proceeds - spent, 2)
+        tur_pnl += pnl
+        closed += 1
+        state["total_pnl"] = round(state.get("total_pnl", 0.0) + pnl, 2)
+        history.append({
+            "symbol": pos.get("symbol"),
+            "predicted_dir": pos.get("predicted_dir"),
+            "actual_dir": "MANUEL",
+            "win": pnl > 0,
+            "entry_price": pos.get("entry_price"),
+            "entry_time_tr": pos.get("entry_time_tr"),
+            "entry_hour_tr": pos.get("entry_hour_tr"),
+            "entry_dow": pos.get("entry_dow"),
+            "amount": pos.get("amount"),
+            "pnl": pnl,
+            "pm_live": True,
+            "manual_close": True,
+            "exit_time_tr": now_tr.isoformat(),
+            "pm_spent": spent,
+            "pm_size": size,
+            "pm_exit_price": price,
+            "pm_proceeds": proceeds,
+            "pm_slug": pos.get("pm_slug"),
+            "algo_name": pos.get("algo_name", spec.algo_name),
+            "algo_num": 0,
+            "settle_source": "pm_external_close",
+            "source_position_id": pos.get("source_position_id"),
+            "mirrored_from_source": pos.get("mirrored_from_source"),
+        })
+        sym = pos.get("symbol") or ""
+        lines.append(
+            f"{'✅' if pnl >= 0 else '❌'} {_sym_short(sym)}  {size:g} share "
+            f"@ {price:.2f} → ${proceeds:.2f}  ({'+' if pnl >= 0 else ''}{pnl:.2f}$)"
+        )
+        print(f"[{spec.label} reconcile] {_sym_short(sym)} PM'de yok — "
+              f"defterden düşüldü {pnl:+.2f}$")
+
+    if not closed:
+        return {"closed": 0, "pnl": 0.0}
+
+    state["open_positions"] = kalan
+    save_state(spec, state)
+    save_history(spec, history)
+    if lines:
+        sep = "━" * 26
+        tg_send(
+            spec.label,
+            f"{sep}\n✋ <b>{spec.label} — PM'de kapanmış</b>  🔴 GERÇEK PM\n"
+            + "\n".join(lines)
+            + f"\nBu tur: {'+' if tur_pnl >= 0 else ''}{tur_pnl:.2f}$  |  {_pm_bal_line()}\n{sep}",
+        )
+    return {"closed": closed, "pnl": round(tur_pnl, 2)}
 
 
 def _manual_close_match(
@@ -675,7 +813,7 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
         return
 
     books = _order_books_by_wr(mirror_book_keys(spec))
-    hour_tr = now_tr.hour
+    hour_tr = ms.current_slot_hour(now_tr)
 
     # Önce tüm kaynaklar okunur; emir göndermeden önce sembol bazında
     # çelişki var mı bakılacak.
@@ -730,6 +868,7 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
     # Yüksek WR'li kaynak önce sıraya girsin — bakiye biterse o değil diğeri elensin.
     plan.sort(key=lambda t: rank.get(t[1], len(books)))
 
+    reconcile_external_closes(spec)
     history = load_history(spec)
     state = load_state(spec)
     _, _, hata = _paths(spec)
@@ -739,6 +878,11 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
     for sym, book, p, meta in plan:
         direction = str(p.get("dir") or "").upper()
         if _live_has_symbol_slot(state, sym, hour_tr, source=book):
+            continue
+        sid = p.get("position_id")
+        if sid and _source_id_in_history(history, sid):
+            print(f"[{spec.label} mirror] {_sym_short(sym)} — bu kaynak id bu slotta "
+                  "zaten kapanmış, tekrar açılmadı")
             continue
 
         base = _trade_amount(spec, history, sym)

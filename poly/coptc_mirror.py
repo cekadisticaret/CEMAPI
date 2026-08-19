@@ -32,6 +32,17 @@ from zoneinfo import ZoneInfo
 
 _DEFAULT_URL = "https://bursaapp.com/poly/api/mirror"
 _TZ_TR = ZoneInfo("Europe/Istanbul")
+# A2#05 / V2: :01 eski slot kapanır, :02 yeni işlem açılır
+SLOT_CLOSE_MINUTE = 1
+SLOT_OPEN_MINUTE = 2
+
+
+def current_slot_hour(now_tr: datetime | None = None) -> int:
+    """:00–:01 hâlâ önceki saat; :02'den itibaren bu saatin slotu."""
+    now_tr = now_tr or datetime.now(_TZ_TR)
+    if now_tr.minute < SLOT_OPEN_MINUTE:
+        return (now_tr.hour - 1) % 24
+    return now_tr.hour
 
 
 def api_url() -> str:
@@ -233,7 +244,7 @@ def open_positions(
 ) -> tuple[list[dict], list[str]]:
     """(kopyalanabilir pozisyonlar, atlama notları).
 
-    expected_hour_tr: cron saati (13 → prediction 13:00-14:00).
+    expected_hour_tr: slot saati (13 → 13:00-14:00). :02 öncesi önceki saat.
     now_tr: slot_open_tr…slot_close_tr penceresi kontrolü için.
     """
     return _positions_from_data(

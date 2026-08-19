@@ -26,7 +26,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
     </nav>
     <div class="sidebar-foot">
       <b>Mirror modu</b>
-      Kaynak defterin pozisyonları otomatik kopyalanır. :05:10–:08 arası 10 sn poll.
+      Kaynak defterin pozisyonları otomatik kopyalanır. :02:08–:08 arası 10 sn poll.
     </div>
   </aside>
 
@@ -130,7 +130,8 @@ let LIVE_ON = false;
 let HIST = [];
 let POS_N = 0;
 let CLOSING = false;
-const CLOSE_ALL_ENABLED = false;
+const CLOSE_ALL_ENABLED = true;
+const CLOSE_ONE_ENABLED = true;
 const $ = id => document.getElementById(id);
 const money = v => v === null || v === undefined ? '—'
   : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('tr-TR', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -176,14 +177,14 @@ function posCard(p){
     <div class="pfoot">
       <span>Risk <b>${money(p.spent)}</b></span>
       <span>Kazanırsa <b class="g">${money(p.to_win)}</b></span></div>
-    <button type="button" class="btn danger btn-sm pclose-btn"
+    ${CLOSE_ONE_ENABLED ? `<button type="button" class="btn danger btn-sm pclose-btn"
       data-symbol="${p.symbol}"
       data-token="${p.token_id || ''}"
       data-source="${p.source_book || ''}"
       data-hour="${p.entry_hour ?? ''}"
       data-pnl="${hasPnl ? p.close_pnl.toFixed(2) : ''}"
-      ${(!p.token_id || p.no_liquidity || !CLOSE_ALL_ENABLED) ? 'disabled' : ''}
-      ${p.no_liquidity ? 'title="Piyasada alıcı yok"' : ''}>Manuel kapat</button></div>`;
+      ${(!p.token_id || p.no_liquidity) ? 'disabled' : ''}
+      ${p.no_liquidity ? 'title="Piyasada alıcı yok"' : ''}>Manuel kapat</button>` : ''}</div>`;
 }
 
 function clock(){
@@ -331,7 +332,7 @@ function render(d){
 
   $('pos').innerHTML = d.positions.length
     ? `<div class="pgrid">${d.positions.map(posCard).join('')}</div>`
-    : `<div class="empty">${d.live_on ? 'Kaynak açınca :05:10–:08 arası PM emri açılır' : 'Live kapalı'}</div>`;
+    : `<div class="empty">${d.live_on ? 'Kaynak açınca :02:08–:08 arası PM emri açılır' : 'Live kapalı'}</div>`;
   const nPos = d.positions.length;
   $('posCount').textContent = nPos ? `(${nPos})` : '';
   $('posSection').classList.toggle('has-pos', nPos > 0);
@@ -419,7 +420,7 @@ const rs0 = $('redeemStat');
 if (rs0) rs0.onclick = cashOut;
 
 async function closeOne(btn){
-  if (!CLOSE_ALL_ENABLED || CLOSING || btn.disabled) return;
+  if (!CLOSE_ONE_ENABLED || CLOSING || btn.disabled) return;
   const sym = btn.dataset.symbol || '?';
   const pnl = btn.dataset.pnl;
   const pnlTxt = pnl ? ((Number(pnl) >= 0 ? '+' : '') + Number(pnl).toFixed(2) + '$') : '—';
@@ -521,8 +522,8 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
     </header>
 
     <div class="cron-strip">
-      <span><b>:04:30</b> Sinyal üret</span>
-      <span><b>:05:10–:08</b> Live PM aç (10 sn poll)</span>
+      <span><b>:01</b> Eski slot kapanır</span>
+      <span><b>:02:08–:08</b> Live PM aç (10 sn poll)</span>
       <span><b>Cum 22:00 – Pzt 11:00</b> HS otomatik penceresi</span>
     </div>
 
@@ -660,7 +661,7 @@ function render(d){
   $('lvst').textContent = d.live_on ? src + ' kaynağından live AÇIK' : 'Gerçek para işlemi KAPALI';
   $('lvst').className = 'lvst ' + (d.live_on ? 'g' : 'b');
   $('lvhint').textContent = d.live_on
-    ? 'Her saat :05:10–:08 arası kaynak 10 sn\'de bir okunur, PM emri açılır.'
+    ? 'Her saat :02:08–:08 arası kaynak 10 sn\'de bir okunur, PM emri açılır.'
     : 'Cron çalışır ama emir gönderilmez.';
   $('blive').textContent = d.live_on ? 'Live kapat' : 'Live aç';
   $('blive').className = 'btn ' + (d.live_on ? 'danger' : 'success');

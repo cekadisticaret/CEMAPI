@@ -1,6 +1,6 @@
 {
-  "coptc_live_amount_low": 24.0,
-  "coptc_live_amount_mid": 32.0,
-  "coptc_live_amount_high": 48.0,
+  "coptc_live_amount_low": 48.0,
+  "coptc_live_amount_mid": 64.0,
+  "coptc_live_amount_high": 72.0,
   "coptc_live_cold_hour_cut_enabled": false
 }

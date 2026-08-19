@@ -4,7 +4,7 @@
 Yön yerelde hesaplanmaz; dashboard'da seçilen kaynak defterin (bursaapp mirror API)
 o saat slotundaki pozisyonları birebir kopyalanır.
 
-Cron: close :02 · mirror poll :05:10…:08 · settle :12
+Cron: close :01 · mirror poll :02:08…:08 · settle :12
 """
 from __future__ import annotations
 

@@ -804,6 +804,19 @@ def pm_sell_position(
             signed = client.create_order(args, PartialCreateOrderOptions())
             resp = client.post_order(signed, order_type=OrderType.FAK)
             if resp and resp.get("success"):
+                after = pm_conditional_shares(token_id)
+                if after >= 0 and shares >= 0:
+                    sold = round(shares - after, 2)
+                    if sold < 0.01:
+                        last_err = "FAK success ama share duruyor (kısmi/boş dolum)"
+                        print(f"[{label}] SELL — {last_err} (önce {shares:g} sonra {after:g})", file=sys.stderr)
+                        continue
+                    return {
+                        "order_id": resp.get("orderID") or resp.get("id", ""),
+                        "size": sold, "price": price,
+                        "proceeds": round(sold * price, 2),
+                        "remaining": after,
+                    }
                 return {
                     "order_id": resp.get("orderID") or resp.get("id", ""),
                     "size": sell_size, "price": price, "proceeds": proceeds,
@@ -1603,6 +1616,43 @@ def _pm_fetch_all_positions(wallet: str) -> list[dict]:
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.loads(r.read().decode())
     return data if isinstance(data, list) else []
+
+
+def pm_recent_sell(token_id: str) -> dict | None:
+    """Cüzdandaki en son SELL fill — panel dışı (PM UI) kapanış kotasyonu."""
+    wallet = _pm_funder()
+    tid = str(token_id or "").strip()
+    if not wallet or not tid:
+        return None
+    url = f"{_PM_DATA_API}/trades?user={wallet}&limit=50"
+    try:
+        req = urllib.request.Request(url, headers={**_PM_HEADERS, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            trades = json.loads(r.read().decode())
+    except Exception as e:
+        print(f"[PM] trades okunamadı: {e}", file=sys.stderr)
+        return None
+    if not isinstance(trades, list):
+        return None
+    for t in trades:
+        asset = str(t.get("asset") or t.get("asset_id") or t.get("token_id") or "")
+        if asset != tid:
+            continue
+        if str(t.get("side") or "").upper() != "SELL":
+            continue
+        try:
+            size = float(t.get("size") or 0)
+            price = float(t.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if size < 0.01 or price <= 0:
+            continue
+        return {
+            "size": size,
+            "price": price,
+            "proceeds": round(size * price, 2),
+        }
+    return None
 
 
 def _pm_position_token_id(p: dict) -> str:
