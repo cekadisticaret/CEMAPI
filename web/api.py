@@ -30,8 +30,6 @@ if os.path.exists(_ENV):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 _TZ_TR = ZoneInfo("Europe/Istanbul")
-# Panel cüzdanı: gerçek PM bakiyesinin üstüne elle eklenen tutar (sadece gösterim)
-_CASH_DISPLAY_EXTRA = 1800.0
 _PM_SKIP_UNTIL = 0.0
 _CASH_CACHE: float | None = None
 
@@ -90,6 +88,15 @@ def history(key: str) -> list:
 _COLD_CUT_KEY = "coptc_live_cold_hour_cut_enabled"
 
 
+def _tier_from_settings(s: dict, key: str, defaults: tuple[float, float, float]) -> dict:
+    lo, mid, hi = defaults
+    return {
+        "low": float(s.get(f"{key}_amount_low", lo)),
+        "mid": float(s.get(f"{key}_amount_mid", mid)),
+        "high": float(s.get(f"{key}_amount_high", hi)),
+    }
+
+
 def amounts(book: str) -> dict:
     cfg = BOOKS[book]
     s = _load(_SETTINGS, {}) or _load(_SETTINGS_LEGACY, {})
@@ -97,12 +104,15 @@ def amounts(book: str) -> dict:
     lo, mid, hi = cfg.get("amount_def", (4.0, 5.0, 6.0))
     legacy = "b1_05"
     cold = s.get(_COLD_CUT_KEY)
-    return {
+    main = {
         "low": float(s.get(f"{k}_amount_low", s.get(f"{legacy}_amount_low", lo))),
         "mid": float(s.get(f"{k}_amount_mid", s.get(f"{legacy}_amount_mid", mid))),
         "high": float(s.get(f"{k}_amount_high", s.get(f"{legacy}_amount_high", hi))),
         "cold_hour_cut_enabled": bool(cold) if cold is not None else True,
     }
+    main["a1"] = _tier_from_settings(s, "coptc_analiz1", (16.0, 24.0, 32.0))
+    main["c1"] = _tier_from_settings(s, "coptc_c101", (6.0, 7.0, 8.0))
+    return main
 
 
 def save_amounts(
@@ -111,11 +121,25 @@ def save_amounts(
     mid: float,
     high: float,
     *,
+    a1_low: float | None = None,
+    a1_mid: float | None = None,
+    a1_high: float | None = None,
+    c1_low: float | None = None,
+    c1_mid: float | None = None,
+    c1_high: float | None = None,
     cold_hour_cut_enabled: bool | None = None,
 ) -> dict:
     k = BOOKS[book]["amount_key"]
     s = _load(_SETTINGS, {})
     s[f"{k}_amount_low"], s[f"{k}_amount_mid"], s[f"{k}_amount_high"] = low, mid, high
+    if None not in (a1_low, a1_mid, a1_high):
+        s["coptc_analiz1_amount_low"] = a1_low
+        s["coptc_analiz1_amount_mid"] = a1_mid
+        s["coptc_analiz1_amount_high"] = a1_high
+    if None not in (c1_low, c1_mid, c1_high):
+        s["coptc_c101_amount_low"] = c1_low
+        s["coptc_c101_amount_mid"] = c1_mid
+        s["coptc_c101_amount_high"] = c1_high
     if cold_hour_cut_enabled is not None:
         s[_COLD_CUT_KEY] = bool(cold_hour_cut_enabled)
     tmp = _SETTINGS + ".tmp"
@@ -316,6 +340,34 @@ def hour_grid(hist: list) -> list[dict]:
     return out
 
 
+_PLATFORM_BY_BOOK = {
+    "analiz1": "A1",
+    "a2_05_v2": "A2#05 V2",
+    "c101": "C1#01",
+}
+
+
+def _trade_platform(t: dict) -> str:
+    """İşlemin kopyalandığı kaynak — yoksa borsa (Polymarket)."""
+    src = str(t.get("mirrored_from_source") or "").strip()
+    if src:
+        short = _short_of(src)
+        if short and short != src:
+            return short
+        return _PLATFORM_BY_BOOK.get(src, src)
+    an = str(t.get("algo_name") or "")
+    if an in _PLATFORM_BY_BOOK:
+        return _PLATFORM_BY_BOOK[an]
+    low = an.lower()
+    if "analiz1" in low or an.startswith("A1"):
+        return "A1"
+    if "mean reversion" in low or "a2_05" in low or "a2#05" in low:
+        return "A2#05 V2"
+    if "opus" in low or "c101" in low or "c1#01" in low:
+        return "C1#01"
+    return "Polymarket"
+
+
 def recent(hist: list, n: int = 25) -> list[dict]:
     rows = []
     for t in reversed(hist[-400:]):
@@ -329,6 +381,7 @@ def recent(hist: list, n: int = 25) -> list[dict]:
             "win": bool(t.get("win")),
             "pnl": round(float(t.get("pnl") or 0), 2),
             "time": ts[5:16].replace("T", " "),
+            "platform": _trade_platform(t),
         })
         if len(rows) >= n:
             break
@@ -507,7 +560,6 @@ def pm_snapshot(book: str) -> dict:
             b = fut.result(timeout=5)
             cash = round(float(b), 2) if b is not None and float(b) >= 0 else None
             if cash is not None:
-                cash = round(cash + _CASH_DISPLAY_EXTRA, 2)
                 _CASH_CACHE = cash
         except Exception:
             _pm_mark_down()
@@ -1118,6 +1170,7 @@ def mobile_home() -> dict:
                 "win": bool(t.get("win")),
                 "pnl": t.get("pnl"),
                 "time": t.get("time"),
+                "platform": t.get("platform") or "Polymarket",
             }
             for t in (o.get("history") or [])
         ],

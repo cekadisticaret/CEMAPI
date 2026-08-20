@@ -321,6 +321,8 @@ _PM_LIVE_SETTINGS_LEGACY = os.path.join(
 )
 _PM_LIVE_AMOUNT_DEFAULTS: dict[str, tuple[float, float, float]] = {
     "coptc_live": (4.0, 5.0, 6.0),
+    "coptc_analiz1": (16.0, 24.0, 32.0),
+    "coptc_c101": (16.0, 24.0, 32.0),
 }
 
 
@@ -377,7 +379,34 @@ def pm_live_wr_amount(
 
 
 def pm_signature_type() -> int:
-    return int(os.getenv("POLY_SIGNATURE_TYPE", "3") or "3")
+    return int(os.getenv("POLY_SIGNATURE_TYPE", "1") or "1")
+
+
+def _patch_clob_http() -> None:
+    """Cloudflare, SDK'nın HTTP/2 + `py_clob_client_v2` UA'sını 403'ler."""
+    import py_clob_client_v2.http_helpers.helpers as h
+    if getattr(h, "_cemapi_patched", False):
+        return
+    import httpx
+    ua = os.getenv("POLY_USER_AGENT") or (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    try:
+        h._http_client.close()
+    except Exception:
+        pass
+    h._http_client = httpx.Client(http2=False, timeout=20.0)
+    _old = h._overload_headers
+
+    def _overload_headers(method, headers):
+        headers = _old(method, headers)
+        headers["User-Agent"] = ua
+        headers["Accept"] = "application/json"
+        return headers
+
+    h._overload_headers = _overload_headers
+    h._cemapi_patched = True
 
 
 def pm_create_or_derive_creds(temp):
@@ -391,6 +420,7 @@ def pm_get_client(*, force: bool = False):
     """Clob client — API key türetmeyi TTL boyunca cache'le (her emirde ~sn kaybı olmasın)."""
     global _PM_CLIENT, _PM_CLIENT_TS
     from py_clob_client_v2 import ClobClient
+    _patch_clob_http()
     pk = os.getenv("POLY_PRIVATE_KEY", "")
     funder = os.getenv("POLY_FUNDER", "")
     sig_type = pm_signature_type()
@@ -1611,11 +1641,30 @@ def _pm_fetch_redeemable(wallet: str) -> list[dict]:
 
 
 def _pm_fetch_all_positions(wallet: str) -> list[dict]:
-    url = f"{_PM_DATA_API}/positions?user={wallet}"
+    url = f"{_PM_DATA_API}/positions?user={wallet}&limit=200"
     req = urllib.request.Request(url, headers={**_PM_HEADERS, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.loads(r.read().decode())
     return data if isinstance(data, list) else []
+
+
+def pm_live_positions_value() -> float:
+    """Açık (henüz kapanmamış) pozisyonların anlık değeri."""
+    wallet = _pm_funder()
+    if not wallet:
+        return 0.0
+    try:
+        positions = _pm_fetch_all_positions(wallet)
+    except Exception:
+        return 0.0
+    total = 0.0
+    for p in positions:
+        if p.get("redeemable"):
+            continue
+        val = float(p.get("currentValue") or 0)
+        if val > 0.01:
+            total += val
+    return round(total, 2)
 
 
 def pm_recent_sell(token_id: str) -> dict | None:

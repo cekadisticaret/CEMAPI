@@ -181,8 +181,22 @@ def get_stats(history: list, symbol: str, hour_tr: int) -> tuple[int, int]:
     return sum(1 for t in trades if t.get("win")), len(trades)
 
 
-def _trade_amount(spec: LiveSpec, history: list, symbol: str) -> float:
-    return pm_live_wr_amount(spec.amount_system, history, symbol, get_symbol_stats)
+_SOURCE_AMOUNT_SYSTEM = {
+    "analiz1": "coptc_analiz1",
+    "c101": "coptc_c101",
+}
+
+
+def _amount_system_for(spec: LiveSpec, source: str | None = None) -> str:
+    return _SOURCE_AMOUNT_SYSTEM.get(str(source or ""), spec.amount_system)
+
+
+def _trade_amount(
+    spec: LiveSpec, history: list, symbol: str, source: str | None = None,
+) -> float:
+    return pm_live_wr_amount(
+        _amount_system_for(spec, source), history, symbol, get_symbol_stats,
+    )
 
 
 def _pm_bal_line() -> str:
@@ -300,6 +314,8 @@ async def run_close(spec: LiveSpec) -> None:
             "algo_name": pos.get("algo_name", spec.algo_name),
             "algo_num": 0,
             "settle_source": settle_src if has_pm else "no_pm",
+            "source_position_id": pos.get("source_position_id"),
+            "mirrored_from_source": pos.get("mirrored_from_source"),
         })
         name = _sym_short(sym)
         lines.append(f"{'✅' if win else '❌'} {name}  {pred}  net {'+' if pnl >= 0 else ''}{pnl:.2f}$")
@@ -885,7 +901,7 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
                   "zaten kapanmış, tekrar açılmadı")
             continue
 
-        base = _trade_amount(spec, history, sym)
+        base = _trade_amount(spec, history, sym, source=book)
         _sk, amount, hot_boost, cold_cut, gate_note = resolve_open_slot_gates(
             history, hour_tr, base
         )

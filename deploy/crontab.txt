@@ -1,7 +1,8 @@
-# CoptC — crontab -e ile ekle. Saatler İstanbul (Europe/Istanbul).
+# CEMAPI — crontab -e ile ekle. Saatler İstanbul (Europe/Istanbul).
 # A2#05 / V2: :01 eski slot kapanır, :02 yeni işlem açılır.
 
-COPTC=/root/projects/CoptC
+CRON_TZ=Europe/Istanbul
+COPTC=/root/projects/CEMAPI
 
 # :01  kaynak slot kapandı — PM settle + redeem
 1  * * * * cd $COPTC && ./venv/bin/python runner.py close     >> /tmp/coptc.log 2>&1

@@ -14,7 +14,7 @@ import secrets
 import sys
 from functools import wraps
 
-from flask import Flask, jsonify, redirect, render_template_string, request, send_from_directory, session
+from flask import Flask, jsonify, redirect, render_template_string, request, send_file, send_from_directory, session
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC = os.path.join(_DIR, "static")
@@ -218,6 +218,15 @@ def settings_page():
     return _render("SETTINGS", book=api.active_book())
 
 
+@app.route("/indir")
+@guard
+def download_zip():
+    path = os.getenv("COPTC_ZIP") or "/root/projects/CoptC-20260819.zip"
+    if not os.path.isfile(path):
+        return "zip yok", 404
+    return send_file(path, as_attachment=True, download_name="CoptC.zip")
+
+
 @app.route("/api/mirror/books")
 @guard
 def api_mirror_books():
@@ -367,9 +376,34 @@ def api_amounts(book: str):
         return jsonify({"error": "low/mid/high sayı olmalı"}), 400
     if not all(1.0 <= v <= 500.0 for v in vals):
         return jsonify({"error": "kademe $1–$500 aralığında olmalı"}), 400
+    a1_vals = None
+    if all(k in d for k in ("a1_low", "a1_mid", "a1_high")):
+        try:
+            a1_vals = [round(float(d[k]), 2) for k in ("a1_low", "a1_mid", "a1_high")]
+        except (TypeError, ValueError):
+            return jsonify({"error": "A1 low/mid/high sayı olmalı"}), 400
+        if not all(1.0 <= v <= 500.0 for v in a1_vals):
+            return jsonify({"error": "A1 kademe $1–$500 aralığında olmalı"}), 400
+    c1_vals = None
+    if all(k in d for k in ("c1_low", "c1_mid", "c1_high")):
+        try:
+            c1_vals = [round(float(d[k]), 2) for k in ("c1_low", "c1_mid", "c1_high")]
+        except (TypeError, ValueError):
+            return jsonify({"error": "C1#01 low/mid/high sayı olmalı"}), 400
+        if not all(1.0 <= v <= 500.0 for v in c1_vals):
+            return jsonify({"error": "C1#01 kademe $1–$500 aralığında olmalı"}), 400
     cold = d.get("cold_hour_cut_enabled")
     cold_opt = bool(cold) if cold is not None else None
-    return jsonify(api.save_amounts(book, *vals, cold_hour_cut_enabled=cold_opt))
+    return jsonify(api.save_amounts(
+        book, *vals,
+        a1_low=a1_vals[0] if a1_vals else None,
+        a1_mid=a1_vals[1] if a1_vals else None,
+        a1_high=a1_vals[2] if a1_vals else None,
+        c1_low=c1_vals[0] if c1_vals else None,
+        c1_mid=c1_vals[1] if c1_vals else None,
+        c1_high=c1_vals[2] if c1_vals else None,
+        cold_hour_cut_enabled=cold_opt,
+    ))
 
 
 if __name__ == "__main__":
