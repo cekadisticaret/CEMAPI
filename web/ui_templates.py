@@ -12,7 +12,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-icon" id="badge">C</div>
-      <div><div class="brand-name">CoptC</div><div class="brand-sub">Live Control</div></div>
+      <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
     </div>
     <nav class="nav">
       <a class="nav-item on" href="{{ base }}/">
@@ -499,7 +499,7 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-icon">C</div>
-      <div><div class="brand-name">CoptC</div><div class="brand-sub">Live Control</div></div>
+      <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
     </div>
     <nav class="nav">
       <a class="nav-item" href="{{ base }}/">
@@ -911,7 +911,7 @@ LOGIN = r"""<!doctype html><html lang="tr"><head>
 <title>{{ app_name }}</title></head>
 <body class="login-page">
 <form class="login-box" method="post">
-  <div class="brand"><div class="brand-icon">C</div><div><div class="brand-name">CoptC</div><div class="brand-sub">Live Control</div></div></div>
+  <div class="brand"><div class="brand-icon">C</div><div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div></div>
   <div class="mut" style="text-align:center;margin-bottom:8px">Panele giriş yap</div>
   <input type="password" name="p" placeholder="Parola" autofocus>
   <button type="submit">Giriş</button>

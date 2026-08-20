@@ -29,7 +29,7 @@ app = Flask(__name__)
 app.secret_key = os.getenv("COPTC_SECRET") or secrets.token_hex(16)
 PASSWORD = (os.getenv("COPTC_PASSWORD") or "").strip()
 PORT = int(os.getenv("COPTC_PORT") or 5060)
-APP_NAME = "CoptC Live Control"
+APP_NAME = "CemAPI Live Control"
 URL_PREFIX = (os.getenv("COPTC_URL_PREFIX") or "").strip().rstrip("/")
 if URL_PREFIX and not URL_PREFIX.startswith("/"):
     URL_PREFIX = "/" + URL_PREFIX

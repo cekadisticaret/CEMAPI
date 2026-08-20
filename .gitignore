@@ -1,5 +1,6 @@
 .env
 poly/.env
+.github_token
 venv/
 __pycache__/
 *.pyc

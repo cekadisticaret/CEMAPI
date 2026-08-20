@@ -45,7 +45,7 @@ def _pm_mark_down(sec: float = 45.0) -> None:
 BOOKS = {
     "live": {
         "badge": "LIVE",
-        "title": "CoptC Live Control",
+        "title": "CemAPI Live Control",
         "subtitle": "Kaynak defter · BTC · ETH · SOL · Saatlik",
         "live": "live",
         "group": "coptc_live",
