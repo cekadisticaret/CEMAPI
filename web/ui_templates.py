@@ -4,7 +4,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }}</title>
 </head><body>
@@ -22,6 +22,10 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
       <a class="nav-item" href="{{ base }}/islemler">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
         İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/algoritma-islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Algoritma İşlemler
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -57,6 +61,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
       <div class="topbar-mobile">
         <button type="button" class="btn btn-mlive danger" id="mLive">Live kapat</button>
         <button type="button" class="btn" id="mDesk">İşlemler</button>
+        <button type="button" class="btn" id="mAlg">Algoritma</button>
         <button type="button" class="btn" id="mGa">Grafik Analiz</button>
         <button type="button" class="btn btn-mset" id="mSet">Ayarlar</button>
       </div>
@@ -165,10 +170,10 @@ function posCard(p){
   const pnlPct = hasPnl && p.pnl_pct != null
     ? (p.pnl_pct >= 0 ? '+' : '') + p.pnl_pct.toFixed(1) + '%'
     : '';
-  const pnlHeroCls = p.no_liquidity ? 'na' : (!hasPnl ? 'flat' : (p.close_pnl > 0 ? 'up' : (p.close_pnl < 0 ? 'dn' : 'flat')));
+  const pnlHeroCls = p.no_liquidity ? 'na' : (!hasPnl ? 'flat' : (p.close_pnl > 0 ? 'is-up' : (p.close_pnl < 0 ? 'is-dn' : 'flat')));
   const badge = p.badge ? `<span class="ptag${p.book === BOOK ? ' me' : ''}">${p.badge}</span>` : '';
   const srcTag = p.source ? `<span class="ptag src">${p.source}</span>` : '';
-  const dirCls = p.dir === 'UP' ? 'up' : (p.dir === 'DOWN' ? 'dn' : '');
+  const dirCls = p.dir === 'UP' ? 'dir-up' : (p.dir === 'DOWN' ? 'dir-dn' : '');
   return `<div class="pcard ${dirCls}"><div class="phead">
       <span class="psym">${p.symbol}${badge}${srcTag}</span>
       <span class="tag ${p.dir === 'UP' ? 'up' : 'dn'}">${dirTr}</span></div>
@@ -184,7 +189,7 @@ function posCard(p){
     </div>
     <div class="pclose"><div><div class="risk-k">Anlık kapatma</div>
       <div class="mut" style="font-size:11px">${p.no_liquidity ? 'alıcı yok' : ('token ' + (p.token_bid ?? '—'))}</div></div>
-      <div class="risk-v">${p.no_liquidity ? '—' : money(p.close_val)}</div></div>
+      <div class="risk-v ${hasPnl ? pnlCls : ''}">${p.no_liquidity ? '—' : money(p.close_val)}</div></div>
     <div class="pfoot">
       <span>Risk <b>${money(p.spent)}</b></span>
       <span>Kazanırsa <b class="g">${money(p.to_win)}</b></span></div>
@@ -239,17 +244,17 @@ function renderDonut(w, l){
   const wLen = (wp / 100) * c;
   const lLen = (lp / 100) * c;
   $('donut').innerHTML = `<svg width="140" height="140" viewBox="0 0 120 120">
-    <circle cx="60" cy="60" r="54" fill="none" stroke="#1e2230" stroke-width="12"/>
-    <circle cx="60" cy="60" r="54" fill="none" stroke="#22c55e" stroke-width="12"
+    <circle cx="60" cy="60" r="54" fill="none" stroke="#2A2D38" stroke-width="14"/>
+    <circle cx="60" cy="60" r="54" fill="none" stroke="#C1FF72" stroke-width="14"
       stroke-dasharray="${wLen} ${c}" stroke-linecap="round"/>
-    <circle cx="60" cy="60" r="54" fill="none" stroke="#ef4444" stroke-width="12"
+    <circle cx="60" cy="60" r="54" fill="none" stroke="#FF4D8D" stroke-width="14"
       stroke-dasharray="${lLen} ${c}" stroke-dashoffset="${-wLen}" stroke-linecap="round"/>
   </svg><div class="donut-center"><div class="big">${tot ? Math.round(wp) : 0}%</div><div class="sm">Win rate</div></div>`;
   $('legend').innerHTML = `
-    <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Kazanç ${w}</div>
-    <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Kayıp ${l}</div>
-    <div class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>Toplam ${tot}</div>
-    <div class="legend-item"><span class="legend-dot" style="background:#636b7e"></span>WR ${tot ? Math.round(wp) : 0}%</div>`;
+    <div class="legend-item"><span class="legend-dot" style="background:#C1FF72"></span>Kazanç ${w}</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#FF4D8D"></span>Kayıp ${l}</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#9a9a9a"></span>Toplam ${tot}</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#6b6b6b"></span>WR ${tot ? Math.round(wp) : 0}%</div>`;
 }
 
 function renderHist(filter=''){
@@ -302,25 +307,25 @@ function render(d){
   const toWinTxt = r.to_win ? money(r.to_win) : '—';
   const closeTxt = r.close_total ? money(r.close_total) : '—';
   $('stats').innerHTML = `
-    <div class="stat">
+    <div class="stat acc-lime">
       <div class="stat-icon blue">💵</div>
       <div class="stat-label">PM nakit</div>
       <div class="stat-val">${money(d.cash)}</div>
       <div class="stat-foot">${d.cash === null ? 'cüzdan tanımsız' : 'serbest USDC'}</div>
     </div>
-    <div class="stat stat-cashout" id="redeemStat" title="Nakde çevir — tıkla">
+    <div class="stat stat-cashout acc-cyan" id="redeemStat" title="Nakde çevir — tıkla">
       <div class="stat-icon blue">↻</div>
       <div class="stat-label">Nakde çevrilecek</div>
       <div class="stat-val" id="redeemVal">${money(d.redeem_pending)}</div>
       <div class="stat-foot" id="redeemFoot">${d.pm_redeem_winners || 0} kazanan · tıkla veya otomatik</div>
     </div>
-    <div class="stat">
+    <div class="stat acc-pink${d.live_pnl > 0 ? ' hi' : ''}">
       <div class="stat-icon ${d.live_pnl < 0 ? 'red' : 'green'}">📈</div>
       <div class="stat-label">Gerçek P&amp;L</div>
       <div class="stat-val${pnlCls}">${money(d.live_pnl)}</div>
       <div class="stat-foot">${d.live_w}W / ${d.live_l}L · defter ${d.pm_book_pnl >= 0 ? '+' : ''}${money(d.pm_book_pnl)}</div>
     </div>
-    <div class="stat stat-risk">
+    <div class="stat stat-risk acc-orange">
       <div class="stat-icon">◎</div>
       <div class="stat-label">Toplam riskteki</div>
       <div class="stat-val">${money(r.total)}</div>
@@ -352,7 +357,10 @@ function render(d){
     ? `<div class="pgrid">${d.positions.map(posCard).join('')}</div>`
     : `<div class="empty">${d.live_on ? 'Kaynak açınca :02:00–:09 arası PM emri açılır' : 'Live kapalı'}</div>`;
   const nPos = d.positions.length;
-  $('posCount').textContent = nPos ? `(${nPos})` : '';
+  const closeSum = (d.positions || []).reduce((s, p) => s + (Number(p.close_val) || 0), 0);
+  $('posCount').innerHTML = nPos
+    ? `(${nPos}) <span class="pos-close-sum">· anlık kapatma ${money(closeSum)}</span>`
+    : '';
   $('posSection').classList.toggle('has-pos', nPos > 0);
   $('posBadge').textContent = nPos ? `${nPos} AÇIK` : 'BOŞ';
   $('posBadge').className = 'status ' + (nPos ? 'ok' : 'wait');
@@ -439,6 +447,7 @@ async function toggleLive(){
 if ($('mLive')) $('mLive').onclick = toggleLive;
 if ($('mSet')) $('mSet').onclick = () => location.href = BASE + '/ayarlar';
 if ($('mDesk')) $('mDesk').onclick = () => location.href = BASE + '/islemler';
+if ($('mAlg')) $('mAlg').onclick = () => location.href = BASE + '/algoritma-islemler';
 if ($('mGa')) $('mGa').onclick = () => location.href = BASE + '/grafik-analiz';
 $('qaLive').onclick = toggleLive;
 $('qhist').oninput = e => renderHist(e.target.value);
@@ -526,7 +535,7 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Ayarlar</title>
 </head><body>
@@ -544,6 +553,10 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
       <a class="nav-item" href="{{ base }}/islemler">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
         İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/algoritma-islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Algoritma İşlemler
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -721,9 +734,9 @@ function render(d){
   $('blive').className = 'btn ' + (d.live_on ? 'danger' : 'success');
   const a = d.amounts;
   $('abox').innerHTML = `
-    <div class="stat"><div class="stat-label">Win rate</div><div class="stat-val ${a.wr >= 50 ? 'g' : 'b'}">${a.wr == null ? '—' : '%'+a.wr}</div></div>
-    <div class="stat"><div class="stat-label">İşlem</div><div class="stat-val">${a.trades}</div></div>
-    <div class="stat"><div class="stat-label">Açık</div><div class="stat-val">${a.open}</div></div>`;
+    <div class="stat acc-lime${a.wr >= 50 ? ' hi' : ''}"><div class="stat-label">Win rate</div><div class="stat-val ${a.wr >= 50 ? 'g' : 'b'}">${a.wr == null ? '—' : '%'+a.wr}</div></div>
+    <div class="stat acc-cyan"><div class="stat-label">İşlem</div><div class="stat-val">${a.trades}</div></div>
+    <div class="stat acc-orange"><div class="stat-label">Açık</div><div class="stat-val">${a.open}</div></div>`;
   if (document.activeElement.tagName !== 'INPUT'){
     $('alow').value = a.low; $('amid').value = a.mid; $('ahigh').value = a.high;
     if ($('mprofit')) $('mprofit').value = a.min_profit_pct ?? 60;
@@ -908,9 +921,9 @@ function renderWd(w){
   const short = a => a ? a.slice(0,6)+'…'+a.slice(-4) : '—';
   const ok = !w.error && w.builder_ready && w.proxy_match;
   $('wdinfo').innerHTML = `
-    <div class="stat"><div class="stat-label">Çekilebilir</div><div class="stat-val">${money(w.balance)}</div></div>
-    <div class="stat"><div class="stat-label">Cüzdan</div><div class="stat-val" style="font-size:14px">${short(w.funder)}</div></div>
-    <div class="stat"><div class="stat-label">Durum</div><div class="stat-val ${ok?'g':'b'}" style="font-size:15px">${ok?'Hazır':'Eksik'}</div></div>`;
+    <div class="stat acc-lime"><div class="stat-label">Çekilebilir</div><div class="stat-val">${money(w.balance)}</div></div>
+    <div class="stat acc-cyan"><div class="stat-label">Cüzdan</div><div class="stat-val" style="font-size:14px">${short(w.funder)}</div></div>
+    <div class="stat acc-pink${ok?' hi':''}"><div class="stat-label">Durum</div><div class="stat-val ${ok?'g':'b'}" style="font-size:15px">${ok?'Hazır':'Eksik'}</div></div>`;
   if (w.error) $('wmsg').innerHTML = `<span class="werr">${w.error}</span>`;
   $('wlog').innerHTML = (w.history||[]).map(h =>
     `<div class="pcard" style="margin-top:8px;padding:10px 14px"><span class="mut">${String(h.ts).slice(5,16)}</span>
@@ -949,7 +962,7 @@ TRADES = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — İşlemler</title>
 </head><body>
@@ -967,6 +980,10 @@ TRADES = r"""<!doctype html><html lang="tr"><head>
       <a class="nav-item on" href="{{ base }}/islemler">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
         İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/algoritma-islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Algoritma İşlemler
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -1314,7 +1331,7 @@ function drawChart(){
   const ctx = c.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
-  ctx.fillStyle = '#0f1117';
+  ctx.fillStyle = '#0F111A';
   ctx.fillRect(0,0,w,h);
   if (!bars.length){
     ctx.fillStyle = '#636b7e';
@@ -1365,7 +1382,7 @@ function drawChart(){
     const y = addLine(ref, '#f59e0b');
     if (y != null) tags.push({y, bg:'#f59e0b', fg:'#1c1004', title:'Ref', px: ref});
   }
-  tags.push({y: yOf(last), bg:'#3b82f6', fg:'#fff', title:'', px: last, last: true});
+  tags.push({y: yOf(last), bg:'#C1FF72', fg:'#11140C', title:'', px: last, last: true});
   tags.sort((a,b) => a.y - b.y);
   const gap = 36;
   for (let i = 1; i < tags.length; i++){
@@ -1426,7 +1443,7 @@ ANALIZ = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Grafik Analiz</title>
 </head><body>
@@ -1444,6 +1461,10 @@ ANALIZ = r"""<!doctype html><html lang="tr"><head>
       <a class="nav-item" href="{{ base }}/islemler">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
         İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/algoritma-islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Algoritma İşlemler
       </a>
       <a class="nav-item on" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -1665,7 +1686,7 @@ function drawOsc(){
   c.width = Math.floor(w * dpr); c.height = Math.floor(h * dpr);
   const ctx = c.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.fillStyle = '#0b0d12'; ctx.fillRect(0,0,w,h);
+  ctx.fillStyle = '#0F111A'; ctx.fillRect(0,0,w,h);
   const rows = (mvrvz && mvrvz.bars) || [];
   if (!rows.length){
     ctx.fillStyle = '#636b7e'; ctx.font = '12px Inter,sans-serif';
@@ -1716,7 +1737,7 @@ function drawOsc(){
   });
   const last = rows[rows.length - 1];
   const ly = yOf(last.risk);
-  ctx.fillStyle = last.risk > 0.70 ? '#ef4444' : last.risk < 0.20 ? '#22c55e' : '#3b82f6';
+  ctx.fillStyle = last.risk > 0.70 ? '#FF4D8D' : last.risk < 0.20 ? '#C1FF72' : '#FFB347';
   ctx.fillRect(w - padR + 2, ly - 8, padR - 4, 16);
   ctx.fillStyle = '#fff'; ctx.font = '700 10px Inter,sans-serif';
   ctx.fillText((+last.risk).toFixed(2), w - padR + 6, ly + 3);
@@ -1731,7 +1752,7 @@ function drawChart(){
   c.width = Math.floor(w * dpr); c.height = Math.floor(h * dpr);
   const ctx = c.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.fillStyle = '#0f1117'; ctx.fillRect(0,0,w,h);
+  ctx.fillStyle = '#0F111A'; ctx.fillRect(0,0,w,h);
   if (!bars.length){ ctx.fillStyle='#636b7e'; ctx.font='13px Inter,sans-serif'; ctx.fillText('grafik yükleniyor…',16,28); return; }
   const padL = 8, padR = 62, padT = 12, volH = Math.floor(h * 0.16);
   const ch = h - volH - 28 - padT;
@@ -1808,9 +1829,9 @@ function drawChart(){
     }
   });
   const y = yOf(last);
-  ctx.fillStyle = '#3b82f6';
+  ctx.fillStyle = '#C1FF72';
   ctx.fillRect(w-padR+2, y-9, padR-4, 18);
-  ctx.fillStyle = '#fff'; ctx.font = '700 11px Inter,sans-serif';
+  ctx.fillStyle = '#11140C'; ctx.font = '700 11px Inter,sans-serif';
   ctx.fillText(fmtPx(last), w-padR+8, y+4);
 }
 
@@ -1829,11 +1850,291 @@ setInterval(loadMvrvz, 60000);
 setInterval(loadConf, 20000);
 </script></body></html>"""
 
+_ALG_NAV = r"""      <a class="nav-item" href="{{ base }}/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+        Dashboard
+      </a>
+      <a class="nav-item" href="{{ base }}/islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
+        İşlemler
+      </a>
+      <a class="nav-item on" href="{{ base }}/algoritma-islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        Algoritma İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/grafik-analiz">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
+        Grafik Analiz
+      </a>
+      <a class="nav-item" href="{{ base }}/ayarlar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        Ayarlar
+      </a>"""
+
+ALGOS = r"""<!doctype html><html lang="tr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
+<title>{{ app_name }} — Algoritma İşlemler</title>
+</head><body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">C</div>
+      <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
+    </div>
+    <nav class="nav">""" + _ALG_NAV + r"""
+    </nav>
+    <div class="sidebar-foot"><b>Sanal Binance</b>$1000 bakiye · $100×10x · max 6 — gerçek emir yok.</div>
+  </aside>
+  <div class="main alg-page">
+    <header class="topbar">
+      <div>
+        <h1>Algoritma İşlemler</h1>
+        <div class="topbar-sub" id="sub">sanal Binance yükleniyor…</div>
+      </div>
+      <div class="topbar-actions">
+        <span class="alg-topstat" id="topstat">—</span>
+        <span class="clock" id="clock">—</span>
+      </div>
+      <div class="topbar-mobile">
+        <button type="button" class="btn" id="mDash">Dashboard</button>
+        <button type="button" class="btn" id="mDesk">İşlemler</button>
+      </div>
+    </header>
+    <div class="alg-wrap">
+      <div class="alg-grid" id="grid"></div>
+      <aside class="alg-side">
+        <div class="alg-side-hd" id="pendHd">İŞLEM BEKLEYEN</div>
+        <div class="alg-pend" id="pend"></div>
+      </aside>
+    </div>
+  </div>
+</div>
+<script>
+const BASE = {{ base|tojson }};
+const $ = id => document.getElementById(id);
+const money = (n, s=true) => {
+  const v = Number(n||0);
+  const t = (v<0?'-':'') + '$' + Math.abs(v).toFixed(2);
+  return s ? `<span class="${v>0?'up':v<0?'dn':''}">${v>0?'+':''}${t.replace('-','')}</span>` : t;
+};
+const signed = n => {
+  const v = Number(n||0);
+  const t = (v>0?'+':'') + v.toFixed(2);
+  return `<span class="${v>0?'up':v<0?'dn':''}">${t}</span>`;
+};
+function tick(){ $('clock').textContent = new Date().toLocaleTimeString('tr-TR'); }
+function bestWrId(rows){
+  const ok = (rows||[]).filter(a => (a.trades||0) > 0);
+  if (!ok.length) return '';
+  ok.sort((a,b) => (b.win_pct||0)-(a.win_pct||0) || (b.trades||0)-(a.trades||0));
+  return ok[0].id;
+}
+function wrRing(pct){
+  const r=20, c=2*Math.PI*r, p=Math.max(0,Math.min(100,Number(pct)||0));
+  const dash=(p/100)*c;
+  return `<svg class="alg-ring" viewBox="0 0 48 48" aria-hidden="true">
+    <circle cx="24" cy="24" r="${r}" fill="none" stroke="currentColor" stroke-width="5" opacity=".18"/>
+    <circle cx="24" cy="24" r="${r}" fill="none" stroke="currentColor" stroke-width="5"
+      stroke-linecap="round" stroke-dasharray="${dash} ${c}" transform="rotate(-90 24 24)"/>
+  </svg>`;
+}
+function card(a, best, i){
+  const acc = ['lime','cyan','pink','orange'][i%4];
+  const wrn = (a.trades||0) ? Number(a.win_pct||0) : 0;
+  const wr = (a.trades||0) ? wrn.toFixed(1)+'%' : '—';
+  const chips = (a.positions||[]).map(p =>
+    `<span class="alg-chip ${p.side==='LONG'?'up':'dn'}">${p.base} ${p.side}</span>`
+  ).join('') || '<span class="alg-chip muted">açık yok</span>';
+  return `<a class="alg-card acc-${acc}${best?' wr-best':''}" href="${BASE}/algoritma/${encodeURIComponent(a.id)}">
+    <div class="alg-card-top">
+      <div>
+        <div class="alg-kicker">ALGORİTMA</div>
+        <div class="alg-name">${a.code}</div>
+        <div class="alg-sub">${a.title} · ${a.trades||0} işlem</div>
+      </div>
+      <div class="alg-ring-box">
+        ${wrRing(wrn)}
+        <b>${(a.trades||0)?Math.round(wrn):'–'}</b>
+      </div>
+    </div>
+    <div class="alg-hero">
+      <span>Bakiye</span>
+      <strong>$${a.equity.toFixed(2)}</strong>
+    </div>
+    <div class="alg-bar"><i style="width:${Math.min(100,wrn)}%"></i></div>
+    <div class="alg-metrics">
+      <div><em>Net P&L</em><b>${signed(a.net_pnl)}</b></div>
+      <div><em>Anlık</em><b>${signed(a.unreal)}</b></div>
+      <div><em>WR</em><b class="alg-wr">${wr}</b></div>
+    </div>
+    <div class="alg-card-foot">
+      <span class="alg-tag ${a.active?'on':''}">${a.active?'LIVE':'OFF'}</span>
+      ${chips}
+    </div>
+  </a>`;
+}
+async function load(){
+  const r = await fetch(BASE + '/api/algo/overview', {cache:'no-store'});
+  if (r.status === 401) return location.href = BASE + '/giris';
+  const d = await r.json();
+  $('sub').textContent = d.subtitle || '';
+  $('topstat').innerHTML = `Net P&L ${signed(d.net_pnl)} · kom. ${signed(-Math.abs(d.fees||0))} · Açık: ${d.open_n||0}`;
+  const rows = (d.algos||[]).slice().sort((a,b)=> (b.equity||0)-(a.equity||0));
+  const top = bestWrId(rows);
+  $('grid').innerHTML = rows.map((a,i) => card(a, a.id===top, i)).join('') || '<div class="mut">ALG klasörü boş</div>';
+  const pend = d.pending||[];
+  $('pendHd').textContent = 'İŞLEM BEKLEYEN — ' + pend.length + ' SİNYAL — ' + (d.coin_n||0) + ' COİN (Grafik Analiz)';
+  $('pend').innerHTML = pend.map(p => `<div class="alg-pend-row">
+    <b>${p.base}</b>
+    <span class="mut">${p.note||''}</span>
+    <span class="alg-dir ${p.side==='LONG'?'up':'dn'}">${p.side==='LONG'?'çıkar':'düşer'}</span>
+  </div>`).join('') || '<div class="mut" style="padding:10px">Tarama bekleniyor…</div>';
+}
+$('mDash').onclick = () => location.href = BASE + '/';
+$('mDesk').onclick = () => location.href = BASE + '/islemler';
+tick(); load();
+setInterval(tick, 1000);
+setInterval(load, 8000);
+</script></body></html>"""
+
+ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
+<title>{{ app_name }} — Algoritma</title>
+</head><body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">C</div>
+      <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
+    </div>
+    <nav class="nav">""" + _ALG_NAV + r"""
+    </nav>
+    <div class="sidebar-foot"><b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.</div>
+  </aside>
+  <div class="main alg-page">
+    <header class="topbar">
+      <div>
+        <h1 id="ttl">…</h1>
+        <div class="topbar-sub" id="sub">—</div>
+      </div>
+      <div class="topbar-actions">
+        <span class="alg-topstat" id="topstat">—</span>
+        <a class="btn" href="{{ base }}/algoritma-islemler">Liste</a>
+        <button class="btn" id="btog">—</button>
+      </div>
+    </header>
+    <div class="alg-detail">
+      <div class="alg-sec-hd">AÇIK POZİSYONLAR</div>
+      <div class="ap-grid" id="opens"></div>
+      <div class="alg-sum" id="sumbar">—</div>
+      <div class="alg-sec-hd" id="hhd">GEÇMİŞ İŞLEMLER</div>
+      <div class="ap-hist" id="hist"></div>
+    </div>
+  </div>
+</div>
+<script>
+const BASE = {{ base|tojson }};
+const AID = {{ aid|tojson }};
+const $ = id => document.getElementById(id);
+const signed = n => {
+  const v = Number(n||0);
+  const sign = v>0?'+':v<0?'−':'';
+  return `<span class="${v>0?'up':v<0?'dn':''}">${sign}$${Math.abs(v).toFixed(2)}</span>`;
+};
+function posMove(p){
+  const e = Number(p.entry), m = Number(p.mark);
+  if (!e) return 0;
+  let r = (m - e) / e * 100;
+  if (p.side === 'SHORT') r = -r;
+  return r;
+}
+function posCard(p){
+  const net = Number(p.net||0);
+  const mv = posMove(p);
+  const tag = net>0?'KÂR':net<0?'ZARAR':'NÖTR';
+  const dirCls = p.side === 'LONG' ? 'dir-up' : (p.side === 'SHORT' ? 'dir-dn' : '');
+  return `<div class="ap-card ${dirCls} ${net>0?'is-win':net<0?'is-lose':''}">
+    <div class="ap-hd">
+      <div><b>${p.base}</b> <span class="alg-dir ${p.side==='LONG'?'up':'dn'}">${p.side}</span></div>
+      <button class="btn danger ap-x" data-id="${p.id}">kapat</button>
+    </div>
+    <div class="ap-px">$${Number(p.mark).toPrecision(6)} <span class="${mv>=0?'up':'dn'}">poz. ${mv>=0?'+':''}${mv.toFixed(2)}%</span> <span class="mut">24s ${Number(p.chg)>=0?'+':''}${Number(p.chg).toFixed(2)}%</span></div>
+    <div class="mut">Giriş $${Number(p.entry).toPrecision(6)} · Açılış ${p.opened||'—'} · ${p.mins!=null?p.mins+' dk açık':''}</div>
+    <div class="ap-net ${net>0?'win':net<0?'lose':'flat'}">
+      <span>${tag}</span>
+      <strong>${signed(net)}</strong>
+    </div>
+    <div class="ap-mini">Brüt ${signed(p.gross)} · Komisyon −$${Number(p.commission).toFixed(2)} · Funding ${signed(p.funding||0)} · Net ${signed(p.net)} · marj ${p.pct>=0?'+':''}${Number(p.pct).toFixed(1)}%</div>
+    <div class="ap-mini">Kar al $${Number(p.tp).toPrecision(6)} (${signed(p.tp_usd)}) · Zarar durdur $${Number(p.sl).toPrecision(6)} (${signed(p.sl_usd)}) · Liq $${Number(p.liq||0).toPrecision(6)}</div>
+    <div class="ap-mini">ATR ${p.atr?Number(p.atr).toPrecision(5):'—'} · ATRP %${p.atrp??'—'} · SL 1.5×ATR · ${p.trail_on?'trail açık 2.5×':'trail 1R sonra'} · ${p.tp1_done?'TP1 alındı · TP2':'TP1 1.5R / TP2 2.5R'}</div>
+    <div class="ap-mini">STR: ${p.lev||10}x · ${p.side.toLowerCase()} · taker VIP0 · mark · ${p.fill||'bid/ask'}</div>
+  </div>`;
+}
+function holdTxt(m){
+  const n = Number(m||0);
+  if (n < 1) return '<1 dk';
+  if (n < 60) return n + ' dk';
+  const h = Math.floor(n/60), d = n%60;
+  return h + 's ' + d + 'dk';
+}
+function row(h){
+  const gir = h.opened || '—';
+  const cik = h.closed || h.t || '—';
+  return `<div class="ap-row">
+    <span class="mut">${cik}</span>
+    <b>${h.base}</b>
+    <span class="alg-dir ${h.side==='LONG'?'up':'dn'}">${h.side}</span>
+    <span class="mut">Giriş ${gir} → Çıkış ${cik} · ${holdTxt(h.mins)} aktif · $${Number(h.entry).toPrecision(6)} → $${Number(h.exit).toPrecision(6)} — ${h.reason} — Kom: $${Number(h.commission).toFixed(2)}${h.funding? ' · fund '+Number(h.funding).toFixed(4):''}</span>
+    <strong class="ap-pnl">${signed(h.net)}</strong>
+  </div>`;
+}
+async function load(){
+  const r = await fetch(BASE + '/api/algo/' + encodeURIComponent(AID), {cache:'no-store'});
+  if (r.status === 401) return location.href = BASE + '/giris';
+  if (!r.ok) { $('ttl').textContent = 'Bulunamadı'; return; }
+  const a = await r.json();
+  $('ttl').textContent = a.code;
+  $('sub').textContent = `${a.title} — Win % ${a.win_pct} — ${a.trades} işlem — $100x10 — max: 6`;
+  $('topstat').innerHTML = `Bakiye: ${a.equity.toFixed(2)} | Net PNL: ${signed(a.net_pnl)} | Anlık Net: ${signed(a.unreal)} | Kom: −$${a.fees.toFixed(2)}`;
+  $('btog').textContent = a.active ? 'Durdur' : 'Başlat';
+  const opens = a.positions||[];
+  $('opens').innerHTML = opens.map(posCard).join('') || '<div class="mut">Açık pozisyon yok — tarama 15m sinyal bekliyor.</div>';
+  $('sumbar').textContent = `${a.code} — ${a.trades} işlem — ${a.wins} kazanç — Kâr toplam: ${(a.realized>=0?'+':'')+a.realized.toFixed(2)}`;
+  $('hhd').textContent = `GEÇMİŞ İŞLEMLER — ${a.code} (${a.trades} TOPLAM)`;
+  $('hist').innerHTML = (a.history||[]).map(row).join('') || '<div class="mut">Henüz kapanmış işlem yok.</div>';
+  document.querySelectorAll('.ap-x').forEach(btn => {
+    btn.onclick = async ev => {
+      ev.preventDefault();
+      btn.disabled = true;
+      await fetch(BASE + '/api/algo/' + encodeURIComponent(AID) + '/close', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({id: btn.dataset.id})
+      });
+      load();
+    };
+  });
+}
+$('btog').onclick = async () => {
+  await fetch(BASE + '/api/algo/' + encodeURIComponent(AID) + '/toggle', {method:'POST'});
+  load();
+};
+load();
+setInterval(load, 6000);
+</script></body></html>"""
+
 LOGIN = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }}</title></head>
 <body class="login-page">

@@ -1334,3 +1334,27 @@ def desk_open(symbol: str, period: int, direction: str, amount: float) -> tuple[
 def desk_close(pos_id: str) -> tuple[dict, int]:
     import desk_trade
     return desk_trade.close_trade(str(pos_id or "").strip())
+
+
+def algo_overview() -> dict:
+    import algo_paper
+    algo_paper.ensure_started()
+    return algo_paper.overview()
+
+
+def algo_detail(aid: str) -> dict | None:
+    import algo_paper
+    algo_paper.ensure_started()
+    return algo_paper.detail(str(aid or "").strip())
+
+
+def algo_toggle(aid: str) -> dict | None:
+    import algo_paper
+    algo_paper.ensure_started()
+    return algo_paper.toggle(str(aid or "").strip())
+
+
+def algo_close(aid: str, pos_id: str) -> tuple[dict, int]:
+    import algo_paper
+    algo_paper.ensure_started()
+    return algo_paper.close_pos(str(aid or "").strip(), str(pos_id or "").strip())

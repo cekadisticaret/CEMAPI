@@ -16,6 +16,8 @@ poly/coptc_live_history.json.bak
 poly/coptc_live_polyhata.json
 poly/withdraw_log.jsonl
 poly/coptc_control.json
+poly/algo_paper_state.json
+poly/algo_paper_state.json.bak
 poly/pm_system_control.json
 ios/.signing/
 ios/build/

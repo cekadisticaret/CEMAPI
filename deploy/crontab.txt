@@ -12,3 +12,7 @@ COPTC=/root/projects/CEMAPI
 
 # :12  PM sonucu geciktiğinde kapanış tekrarı
 12 * * * * cd $COPTC && ./venv/bin/python runner.py settle    >> /tmp/coptc.log 2>&1
+
+# ALG sanal futures — dashboard thread her 60 sn tarar; süreç ölürse geri kaldır
+@reboot cd $COPTC && ./scripts/restart_dashboard.sh >> /tmp/coptc_dashboard.log 2>&1
+* * * * *  pgrep -f 'web/dashboard.py' >/dev/null || (cd $COPTC && ./scripts/restart_dashboard.sh >> /tmp/coptc_dashboard.log 2>&1)

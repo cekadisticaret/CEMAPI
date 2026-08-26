@@ -1358,7 +1358,10 @@ def sanal_pnl(pos: dict, win: bool) -> float:
 
 
 def pm_sanal_slot_candle(symbol: str, entry_time_tr: str) -> tuple[float, float] | None:
-    """PM slot saatinin Binance 1h open/close (İST entry_time_tr)."""
+    """PM slot saatinin Binance **spot** 1h open/close — Polymarket aynı mumu kullanır.
+
+    Futures (fapi) mumuna bakmak BTC gibi ince farklarda ters yön yazdırır.
+    """
     try:
         et = datetime.fromisoformat(entry_time_tr.replace("Z", "+00:00")).astimezone(_TZ_TR)
     except Exception:
@@ -1366,11 +1369,12 @@ def pm_sanal_slot_candle(symbol: str, entry_time_tr: str) -> tuple[float, float]
     slot = et.replace(minute=0, second=0, microsecond=0)
     ms = int(slot.timestamp() * 1000)
     url = (
-        "https://fapi.binance.com/fapi/v1/klines?"
+        "https://api.binance.com/api/v3/klines?"
         f"symbol={symbol}&interval=1h&startTime={ms}&limit=1"
     )
     try:
-        with urllib.request.urlopen(url, timeout=15) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": "CEMAPI"})
+        with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
     except Exception:
         return None

@@ -5,10 +5,10 @@ girileceğine kaynak karar verir; burada yalnızca kararı okuyup uygularız. E�
 değiştirmek gerekirse yer kaynak sunucunun .env'i, bu dosya değil.
 
 Kaynağın gönderdiği karar alanları:
-    positions[].copyable         kopyalanacak mı (tek doğruluk kaynağı)
+    positions[].copyable         kopyalanacak mı
     positions[].block_reason     kopyalanmıyorsa makine okunur kod
     positions[].block_detail     insan okunur gerekçe (log'a bu yazılır)
-    positions[].entry_price_min  emir anındaki fiyat tabanı
+    positions[].entry_price_min  kaynak tabanı — yerelde uygulanmaz (CLOB 0.02)
     positions[].entry_price_max  emir anındaki fiyat tavanı
     positions[].min_stake_usd    borsa minimumunu şişirmeden girilebilecek en az tutar
     positions[].position_id      mükerrer kontrolü için sabit kimlik
@@ -165,20 +165,24 @@ def policy(data: dict) -> dict:
     return data.get("policy") or {}
 
 
-def order_guards(pos: dict, amount: float, data: dict | None = None) -> dict | None:
-    """pm_place_order'a verilecek fiyat/harcama sınırları — hepsi kaynaktan.
+def _is_price_floor_block(pos: dict) -> bool:
+    """Kaynağın 0.40 tabanı — ucuz dolum = yüksek RR, atlama gerekçesi değil."""
+    detail = str(pos.get("block_detail") or pos.get("block_reason") or "")
+    return "< taban" in detail or "yanlışlamış" in detail
 
-    Kaynak sınırları göndermiyorsa None döner ve emir açılmaz; ayna eksik
-    sınırın yerine varsayılan uydurmaz.
+
+def order_guards(pos: dict, amount: float, data: dict | None = None) -> dict | None:
+    """pm_place_order'a verilecek fiyat/harcama sınırları.
+
+    Tavan ve harcama oranı kaynaktan. Taban (0.40) uygulanmaz — CLOB tick 0.02.
     """
     pol = policy(data or {})
     hi = pos.get("entry_price_max", pol.get("entry_price_max"))
-    lo = pos.get("entry_price_min", pol.get("entry_price_min"))
     ratio = pol.get("max_spend_ratio")
     if hi is None or ratio is None:
         return None
     return {
-        "min_price": float(lo or 0),
+        "min_price": 0.02,
         "max_price": float(hi),
         "max_spend": round(float(amount) * float(ratio), 2),
     }
@@ -190,11 +194,10 @@ def _positions_from_data(
     expected_hour_tr: int | None = None,
     now_tr: datetime | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """Kaynağın copyable=true dediği pozisyonlar + atlama gerekçeleri.
+    """Kopyalanacak pozisyonlar + atlama gerekçeleri.
 
-    Buradaki tek yerel kontrol, kaynağın konuştuğu slot ile bizim cron saatimizin
-    aynı saat olması: işlemin iyi/kötü olduğuna dair değil, iki makinenin aynı
-    saatten bahsettiğine dair bir bütünlük kontrolü.
+    copyable=false yalnızca taban (0.40) yüzündense yine alınır. Diğer
+    kaynak kapatmaları ve slot saati kontrolü durur.
     """
     if not data.get("ok"):
         raise RuntimeError(f"mirror API ok=false: {str(data)[:160]}")
@@ -224,6 +227,9 @@ def _positions_from_data(
             )
             continue
         if not p.get("copyable"):
+            if _is_price_floor_block(p):
+                rows.append(p)
+                continue
             skipped.append(
                 f"{sym}: {p.get('block_detail') or p.get('block_reason') or 'kaynak kapattı'}"
             )

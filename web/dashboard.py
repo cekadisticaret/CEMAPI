@@ -230,6 +230,18 @@ def chart_analiz_page():
     return _render("ANALIZ", book=api.active_book())
 
 
+@app.route("/algoritma-islemler")
+@guard
+def algo_list_page():
+    return _render("ALGOS", book=api.active_book())
+
+
+@app.route("/algoritma/<aid>")
+@guard
+def algo_detail_page(aid: str):
+    return _render("ALGO_ONE", book=api.active_book(), aid=aid)
+
+
 @app.route("/indir")
 @guard
 def download_zip():
@@ -461,6 +473,38 @@ def api_desk_close():
     return jsonify(res), status
 
 
+@app.route("/api/algo/overview")
+@guard
+def api_algo_overview():
+    return jsonify(api.algo_overview())
+
+
+@app.route("/api/algo/<aid>")
+@guard
+def api_algo_detail(aid: str):
+    row = api.algo_detail(aid)
+    if not row:
+        return jsonify({"error": "algoritma yok"}), 404
+    return jsonify(row)
+
+
+@app.route("/api/algo/<aid>/toggle", methods=["POST"])
+@guard
+def api_algo_toggle(aid: str):
+    row = api.algo_toggle(aid)
+    if not row:
+        return jsonify({"error": "algoritma yok"}), 404
+    return jsonify(row)
+
+
+@app.route("/api/algo/<aid>/close", methods=["POST"])
+@guard
+def api_algo_close(aid: str):
+    d = request.get_json(silent=True) or {}
+    res, status = api.algo_close(aid, str(d.get("id") or ""))
+    return jsonify(res), status
+
+
 @app.route("/api/<book>/amounts", methods=["POST"])
 @guard
 def api_amounts(book: str):
@@ -510,6 +554,20 @@ def api_amounts(book: str):
         c1_high=c1_vals[2] if c1_vals else None,
         cold_hour_cut_enabled=cold_opt,
     ))
+
+
+def _start_algo_loop():
+    try:
+        p = os.path.join(_DIR, "..", "poly")
+        if p not in sys.path:
+            sys.path.insert(0, p)
+        import algo_paper
+        algo_paper.ensure_started()
+    except Exception as exc:
+        print("algo_paper:", exc)
+
+
+_start_algo_loop()
 
 
 if __name__ == "__main__":
