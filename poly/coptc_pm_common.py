@@ -107,6 +107,7 @@ def try_pm_open(
     order = pm_place_order(
         token_id, amount, pm["tick_size"], pm["neg_risk"],
         label=label, hata_file=hata_file,
+        min_profit_pct=pmh.load_min_profit_pct() or None,
     )
     if not order:
         return None, "order"

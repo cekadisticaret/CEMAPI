@@ -218,6 +218,18 @@ def settings_page():
     return _render("SETTINGS", book=api.active_book())
 
 
+@app.route("/islemler")
+@guard
+def trades_page():
+    return _render("TRADES", book=api.active_book())
+
+
+@app.route("/grafik-analiz")
+@guard
+def chart_analiz_page():
+    return _render("ANALIZ", book=api.active_book())
+
+
 @app.route("/indir")
 @guard
 def download_zip():
@@ -364,6 +376,91 @@ def api_withdraw_send():
     return jsonify(res), status
 
 
+@app.route("/api/desk/snapshot")
+@guard
+def api_desk_snapshot():
+    try:
+        period = int(request.args.get("period") or 60)
+    except (TypeError, ValueError):
+        period = 60
+    return jsonify(api.desk_snapshot(period))
+
+
+@app.route("/api/desk/quote")
+@guard
+def api_desk_quote():
+    try:
+        period = int(request.args.get("period") or 60)
+        amount = float(request.args.get("amount") or 7)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "tutar/periyot sayı olmalı"})
+    return jsonify(api.desk_quote(
+        str(request.args.get("symbol") or ""),
+        period,
+        str(request.args.get("dir") or "UP"),
+        amount,
+    ))
+
+
+@app.route("/api/consensus")
+@guard
+def api_consensus():
+    return jsonify(api.desk_consensus())
+
+
+@app.route("/api/desk/futures")
+@guard
+def api_desk_futures():
+    return jsonify(api.desk_futures())
+
+
+@app.route("/api/desk/mvrvz")
+@guard
+def api_desk_mvrvz():
+    return jsonify(api.desk_mvrvz(str(request.args.get("symbol") or "BTCUSDT")))
+
+
+@app.route("/api/desk/confluence")
+@guard
+def api_desk_confluence():
+    return jsonify(api.desk_confluence(str(request.args.get("symbol") or "BTCUSDT")))
+
+
+@app.route("/api/desk/klines")
+@guard
+def api_desk_klines():
+    ov = str(request.args.get("overlay") or "1").lower() not in ("0", "false", "no")
+    return jsonify(api.desk_klines(
+        str(request.args.get("symbol") or "BTCUSDT"),
+        str(request.args.get("interval") or "1m"),
+        overlay=ov,
+    ))
+
+
+@app.route("/api/desk/open", methods=["POST"])
+@guard
+def api_desk_open():
+    d = request.get_json(silent=True) or {}
+    try:
+        amount = float(d.get("amount") or 0)
+        period = int(d.get("period") or 60)
+    except (TypeError, ValueError):
+        return jsonify({"error": "tutar/periyot sayı olmalı"}), 400
+    res, status = api.desk_open(
+        str(d.get("symbol") or ""), period,
+        str(d.get("dir") or ""), amount,
+    )
+    return jsonify(res), status
+
+
+@app.route("/api/desk/close", methods=["POST"])
+@guard
+def api_desk_close():
+    d = request.get_json(silent=True) or {}
+    res, status = api.desk_close(str(d.get("id") or ""))
+    return jsonify(res), status
+
+
 @app.route("/api/<book>/amounts", methods=["POST"])
 @guard
 def api_amounts(book: str):
@@ -394,8 +491,17 @@ def api_amounts(book: str):
             return jsonify({"error": "C1#01 kademe $1–$500 aralığında olmalı"}), 400
     cold = d.get("cold_hour_cut_enabled")
     cold_opt = bool(cold) if cold is not None else None
+    profit = d.get("min_profit_pct")
+    if profit is not None:
+        try:
+            profit = round(float(profit), 1)
+        except (TypeError, ValueError):
+            return jsonify({"error": "asgari kâr yüzdesi sayı olmalı"}), 400
+        if not 0.0 <= profit <= 900.0:
+            return jsonify({"error": "asgari kâr %0–%900 aralığında olmalı"}), 400
     return jsonify(api.save_amounts(
         book, *vals,
+        min_profit_pct=profit,
         a1_low=a1_vals[0] if a1_vals else None,
         a1_mid=a1_vals[1] if a1_vals else None,
         a1_high=a1_vals[2] if a1_vals else None,

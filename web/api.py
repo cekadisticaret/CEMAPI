@@ -11,6 +11,7 @@ import os
 import secrets
 import sys
 import time
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -31,7 +32,29 @@ if os.path.exists(_ENV):
 
 _TZ_TR = ZoneInfo("Europe/Istanbul")
 _PM_SKIP_UNTIL = 0.0
-_CASH_CACHE: float | None = None
+_CASH_FILE = os.path.join(_POLY, "coptc_cash_cache.json")
+
+
+def _read_cash_file() -> float | None:
+    try:
+        with open(_CASH_FILE, encoding="utf-8") as f:
+            v = float(json.load(f).get("cash"))
+        return round(v, 2) if v >= 0 else None
+    except Exception:
+        return None
+
+
+def _write_cash_file(v: float) -> None:
+    try:
+        tmp = _CASH_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"cash": round(float(v), 2), "ts": time.time()}, f)
+        os.replace(tmp, _CASH_FILE)
+    except Exception:
+        pass
+
+
+_CASH_CACHE: float | None = _read_cash_file()
 
 
 def _pm_reachable() -> bool:
@@ -52,7 +75,7 @@ BOOKS = {
         "amount_key": "coptc_live",
         "amount_def": (4.0, 5.0, 6.0),
         "metric": "engine",
-        "timeline": [(":01", "Live kapat"), (":02:08–:08", "Kaynak API poll → PM emri")],
+        "timeline": [(":01", "Live kapat"), (":02:00–:09", "Kaynak API poll → PM emri")],
     },
 }
 
@@ -86,15 +109,7 @@ def history(key: str) -> list:
 
 # ── ayarlar / live anahtarı ──────────────────────────────────────
 _COLD_CUT_KEY = "coptc_live_cold_hour_cut_enabled"
-
-
-def _tier_from_settings(s: dict, key: str, defaults: tuple[float, float, float]) -> dict:
-    lo, mid, hi = defaults
-    return {
-        "low": float(s.get(f"{key}_amount_low", lo)),
-        "mid": float(s.get(f"{key}_amount_mid", mid)),
-        "high": float(s.get(f"{key}_amount_high", hi)),
-    }
+_MIN_PROFIT_KEY = "coptc_min_profit_pct"
 
 
 def amounts(book: str) -> dict:
@@ -110,8 +125,13 @@ def amounts(book: str) -> dict:
         "high": float(s.get(f"{k}_amount_high", s.get(f"{legacy}_amount_high", hi))),
         "cold_hour_cut_enabled": bool(cold) if cold is not None else True,
     }
-    main["a1"] = _tier_from_settings(s, "coptc_analiz1", (16.0, 24.0, 32.0))
-    main["c1"] = _tier_from_settings(s, "coptc_c101", (6.0, 7.0, 8.0))
+    try:
+        main["min_profit_pct"] = float(s.get(_MIN_PROFIT_KEY, 60.0))
+    except (TypeError, ValueError):
+        main["min_profit_pct"] = 60.0
+    main["min_profit_max_price"] = round(
+        1.0 / (1.0 + max(0.0, main["min_profit_pct"]) / 100.0), 3
+    )
     return main
 
 
@@ -128,20 +148,18 @@ def save_amounts(
     c1_mid: float | None = None,
     c1_high: float | None = None,
     cold_hour_cut_enabled: bool | None = None,
+    min_profit_pct: float | None = None,
 ) -> dict:
     k = BOOKS[book]["amount_key"]
     s = _load(_SETTINGS, {})
-    s[f"{k}_amount_low"], s[f"{k}_amount_mid"], s[f"{k}_amount_high"] = low, mid, high
-    if None not in (a1_low, a1_mid, a1_high):
-        s["coptc_analiz1_amount_low"] = a1_low
-        s["coptc_analiz1_amount_mid"] = a1_mid
-        s["coptc_analiz1_amount_high"] = a1_high
-    if None not in (c1_low, c1_mid, c1_high):
-        s["coptc_c101_amount_low"] = c1_low
-        s["coptc_c101_amount_mid"] = c1_mid
-        s["coptc_c101_amount_high"] = c1_high
+    for prefix in (k, "coptc_live", "coptc_analiz1", "coptc_c101"):
+        s[f"{prefix}_amount_low"] = low
+        s[f"{prefix}_amount_mid"] = mid
+        s[f"{prefix}_amount_high"] = high
     if cold_hour_cut_enabled is not None:
         s[_COLD_CUT_KEY] = bool(cold_hour_cut_enabled)
+    if min_profit_pct is not None:
+        s[_MIN_PROFIT_KEY] = round(max(0.0, min(900.0, float(min_profit_pct))), 1)
     tmp = _SETTINGS + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(s, f, indent=2, ensure_ascii=False)
@@ -552,20 +570,38 @@ def pm_snapshot(book: str) -> dict:
     spot_map = _spot_prices(pairs)
 
     cash = None
+    cash_stale = False
+    cash_source = None
     global _CASH_CACHE
-    if os.getenv("POLY_PRIVATE_KEY") and _pm_reachable():
+    try:
+        from pm_trader_helpers import pm_chain_collateral
+        b = pm_chain_collateral()
+        if b is not None and float(b) >= 0:
+            cash = round(float(b), 2)
+            cash_source = "chain"
+            _CASH_CACHE = cash
+            _write_cash_file(cash)
+    except Exception:
+        pass
+    if cash is None and os.getenv("POLY_PRIVATE_KEY") and _pm_reachable():
         try:
             from pm_trader_helpers import pm_get_balance
             fut = ThreadPoolExecutor(max_workers=1).submit(pm_get_balance)
-            b = fut.result(timeout=5)
-            cash = round(float(b), 2) if b is not None and float(b) >= 0 else None
-            if cash is not None:
+            b = fut.result(timeout=6)
+            if b is not None and float(b) >= 0:
+                cash = round(float(b), 2)
+                cash_source = "clob"
                 _CASH_CACHE = cash
+                _write_cash_file(cash)
+            else:
+                _pm_mark_down(90.0)
         except Exception:
-            _pm_mark_down()
-            cash = _CASH_CACHE
-    elif os.getenv("POLY_PRIVATE_KEY"):
-        cash = _CASH_CACHE
+            _pm_mark_down(90.0)
+    if cash is None:
+        cash = _CASH_CACHE if _CASH_CACHE is not None else _read_cash_file()
+        cash_stale = cash is not None
+        if cash is not None:
+            cash_source = "cache"
 
     rows, risk, to_win, upnl, close_tot = [], 0.0, 0.0, 0.0, 0.0
     for p in opens:
@@ -592,6 +628,8 @@ def pm_snapshot(book: str) -> dict:
     start_est = round(eq - pnl, 2) if eq is not None else None
     return {
         "cash": cash,
+        "cash_stale": cash_stale,
+        "cash_source": cash_source,
         "redeem_pending": pending.get("value", 0.0),
         "live_pnl": pnl,
         "live_w": w, "live_l": n - w, "live_wr": wr, "live_trades": n,
@@ -882,34 +920,59 @@ _MANUAL_CLOSE_ALL_ENABLED = True
 _MANUAL_CLOSE_ONE_ENABLED = True
 
 
+def _acquire_open_lock(wait: float = 40.0):
+    """Ayna tick'i bitene kadar bekle; olmazsa None."""
+    import fcntl
+
+    f = open(_OPEN_LOCK, "w")
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                f.close()
+                return None
+            time.sleep(0.35)
+
+
+def _release_open_lock(f) -> None:
+    import fcntl
+
+    if f is None:
+        return
+    with contextlib.suppress(Exception):
+        fcntl.flock(f, fcntl.LOCK_UN)
+    with contextlib.suppress(Exception):
+        f.close()
+
+
 def manual_close_all() -> tuple[dict, int]:
     """Açık live pozisyonların tamamını piyasa fiyatından sat.
 
-    Ayna turu (:02:08–:08) aynı state dosyasına yazıyor — runner'ın kilidini
+    Ayna turu (:02:00–:09) aynı state dosyasına yazıyor — runner'ın kilidini
     alamazsak hiç başlama; iki süreç state'i birbirinin üzerine yazar.
     """
     if not _MANUAL_CLOSE_ALL_ENABLED:
         return {"error": "Tümünü kapat panelden kapalı"}, 403
-    import fcntl
 
     opens = [p for p in state(BOOKS["live"]["live"]).get("open_positions") or [] if _is_real_pm(p)]
     if not opens:
         return {"error": "Açık pozisyon yok"}, 400
 
-    with open(_OPEN_LOCK, "w") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return {"error": "Açılış turu sürüyor — birkaç saniye sonra tekrar dene"}, 409
-        try:
-            import coptc_live_core as core
-            from coptc_live import SPEC
-            res = core.run_manual_close(SPEC)
-        except Exception as e:
-            print(f"[CoptC-dashboard] manuel kapatma: {e}", file=sys.stderr)
-            return {"error": str(e)[:200]}, 500
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    f = _acquire_open_lock(40)
+    if f is None:
+        return {"error": "Açılış turu sürüyor — 10 sn sonra tekrar dene"}, 409
+    try:
+        import coptc_live_core as core
+        from coptc_live import SPEC
+        res = core.run_manual_close(SPEC)
+    except Exception as e:
+        print(f"[CoptC-dashboard] manuel kapatma: {e}", file=sys.stderr)
+        return {"error": str(e)[:200]}, 500
+    finally:
+        _release_open_lock(f)
 
     return res, 200
 
@@ -925,31 +988,30 @@ def manual_close_position(
         return {"error": "Manuel kapatma panelden kapalı"}, 403
     if not token_id:
         return {"error": "token_id gerekli"}, 400
-    import fcntl
 
     opens = [p for p in state(BOOKS["live"]["live"]).get("open_positions") or [] if _is_real_pm(p)]
     if not opens:
         return {"error": "Açık pozisyon yok"}, 400
 
-    with open(_OPEN_LOCK, "w") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return {"error": "Açılış turu sürüyor — birkaç saniye sonra tekrar dene"}, 409
-        try:
-            import coptc_live_core as core
-            from coptc_live import SPEC
-            res = core.run_manual_close(
-                SPEC, token_id=token_id, source=source, hour_tr=hour_tr,
-            )
-        except Exception as e:
-            print(f"[CoptC-dashboard] tek pozisyon kapatma: {e}", file=sys.stderr)
-            return {"error": str(e)[:200]}, 500
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+    f = _acquire_open_lock(40)
+    if f is None:
+        return {"error": "Açılış turu sürüyor — 10 sn sonra tekrar dene"}, 409
+    try:
+        import coptc_live_core as core
+        from coptc_live import SPEC
+        res = core.run_manual_close(
+            SPEC, token_id=token_id, source=source, hour_tr=hour_tr,
+        )
+    except Exception as e:
+        print(f"[CoptC-dashboard] tek pozisyon kapatma: {e}", file=sys.stderr)
+        return {"error": str(e)[:200]}, 500
+    finally:
+        _release_open_lock(f)
 
     if res.get("closed"):
         return res, 200
+    if not res.get("error"):
+        res["error"] = "Kapatılamadı"
     if res.get("failed"):
         return res, 502
     return res, 404
@@ -1012,9 +1074,9 @@ def overview(book: str) -> dict:
     """Yalnız gerçek PM (live) verisi — sanal defter ekrana hiç çıkmaz."""
     if _pm_reachable():
         try:
-            _try_reconcile_external()
+            ThreadPoolExecutor(max_workers=1).submit(_try_reconcile_external).result(timeout=3)
         except Exception:
-            _pm_mark_down()
+            _pm_mark_down(90.0)
     cfg = BOOKS[book]
     if not _mirror_cache.get("rows"):
         try:
@@ -1023,7 +1085,12 @@ def overview(book: str) -> dict:
             pass
     src = mirror_meta()
     if _pm_reachable():
-        auto_cash_out(force=False)
+        try:
+            ThreadPoolExecutor(max_workers=1).submit(
+                lambda: auto_cash_out(force=False)
+            ).result(timeout=3)
+        except Exception:
+            _pm_mark_down(90.0)
     pm = pm_snapshot(book)
     lhist = history(cfg["live"])
     _, ln, _ = _wr(lhist)
@@ -1056,7 +1123,7 @@ def overview(book: str) -> dict:
         "badge": src.get("short") or mirror_label(),
         "title": src_name,
         "subtitle": src_sub,
-        "timeline": [(":01", "Live kapat"), (":02:08–:08", "Kaynak aynası poll → PM emri")],
+        "timeline": [(":01", "Live kapat"), (":02:00–:09", "Kaynak aynası poll → PM emri")],
         "live_open": live_open(book),
         "active": active_book(),
         "live_on": live_on(),
@@ -1117,12 +1184,17 @@ def mobile_home() -> dict:
     on = bool(o.get("live_on"))
     src = o.get("mirror_short") or o.get("mirror_book") or "—"
     footer = f"{src} aynası · PM emri açık" if on else "Live kapalı"
+    hint = ""
+    if o.get("cash_stale") or o.get("cash_source") == "cache":
+        hint = " · son okunan"
+    elif o.get("cash_source") == "chain":
+        hint = " · zincir"
     if equity is not None:
-        subtitle = f"Anlık toplam {_money_tr(equity)} · serbest USDC"
+        subtitle = f"Anlık toplam {_money_tr(equity)} · serbest USDC{hint}"
     elif cash is None:
-        subtitle = "cüzdan tanımsız"
+        subtitle = "CLOB yanıt vermedi"
     else:
-        subtitle = "Serbest USDC"
+        subtitle = f"Serbest USDC{hint}"
     ring = None
     if cash is not None:
         ring = round(min(1.0, max(0.0, float(cash) / 1000.0)), 3)
@@ -1206,3 +1278,59 @@ def mobile_save_amounts(low: float, mid: float, high: float) -> dict:
 def mobile_set_live(on: bool) -> dict:
     set_active(active_book(), on)
     return {"live": mobile_live()}
+
+
+def desk_snapshot(period: int = 60) -> dict:
+    import desk_trade
+    return desk_trade.snapshot(int(period))
+
+
+def desk_quote(symbol: str, period: int, direction: str, amount: float) -> dict:
+    import desk_trade
+    return desk_trade.quote_for(symbol, int(period), direction, amount)
+
+
+def desk_consensus() -> dict:
+    import coptc_mirror as ms
+    try:
+        return ms.fetch_consensus()
+    except Exception:
+        return {"ok": False, "coins": []}
+
+
+def desk_futures() -> dict:
+    import desk_trade
+    return {"symbols": desk_trade.futures_symbols()}
+
+
+def desk_mvrvz(symbol: str) -> dict:
+    import desk_trade
+    return desk_trade.mvrvz_risk(symbol)
+
+
+def desk_confluence(symbol: str) -> dict:
+    import desk_trade
+    return desk_trade.confluence_1h(symbol)
+
+
+def desk_klines(symbol: str, interval: str = "1m", overlay: bool = True) -> dict:
+    import desk_trade
+    bars = desk_trade.klines(symbol, interval)
+    out = {
+        "symbol": symbol,
+        "interval": interval,
+        "bars": bars,
+    }
+    if overlay:
+        out["overlay"] = desk_trade.chart_overlay(bars)
+    return out
+
+
+def desk_open(symbol: str, period: int, direction: str, amount: float) -> tuple[dict, int]:
+    import desk_trade
+    return desk_trade.open_trade(symbol, int(period), direction, amount)
+
+
+def desk_close(pos_id: str) -> tuple[dict, int]:
+    import desk_trade
+    return desk_trade.close_trade(str(pos_id or "").strip())

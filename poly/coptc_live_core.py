@@ -181,14 +181,9 @@ def get_stats(history: list, symbol: str, hour_tr: int) -> tuple[int, int]:
     return sum(1 for t in trades if t.get("win")), len(trades)
 
 
-_SOURCE_AMOUNT_SYSTEM = {
-    "analiz1": "coptc_analiz1",
-    "c101": "coptc_c101",
-}
-
-
 def _amount_system_for(spec: LiveSpec, source: str | None = None) -> str:
-    return _SOURCE_AMOUNT_SYSTEM.get(str(source or ""), spec.amount_system)
+    # Tek kademe — API'den hangi kaynak seçilirse aynı Low/Mid/High.
+    return spec.amount_system
 
 
 def _trade_amount(
@@ -409,7 +404,7 @@ def run_manual_close(
                 "external": True,
             }
         else:
-            res = pm_sell_position(str(tid), sell_size, label=spec.label)
+            res = pm_sell_position(str(tid), sell_size, label=spec.label, attempts=5)
         if not res:
             failed += 1
             kalan.append(pos)
@@ -429,6 +424,7 @@ def run_manual_close(
             if old_sz > 0:
                 pos["pm_spent"] = round(old_spent * leftover / old_sz, 2)
             kalan.append(pos)
+            failed += 1
             print(
                 f"[{spec.label} manuel] {_sym_short(sym)} kısmi satış — "
                 f"{leftover:g} share duruyor, defterde kaldı",
@@ -487,25 +483,152 @@ def run_manual_close(
         )
     out = {"closed": closed, "failed": failed, "pnl": round(tur_pnl, 2)}
     if failed:
-        out["error"] = pmh.pm_last_order_error()
+        still = next(
+            (
+                p for p in kalan
+                if targeted and _manual_close_match(
+                    p, symbols=want, token_id=token_id, source=source, hour_tr=hour_tr,
+                )
+            ),
+            None,
+        )
+        if still and still.get("pm_size"):
+            left = still["pm_size"]
+            out["remaining"] = left
+            out["error"] = f"Kısmi satış — {left:g} share kaldı. Bir kez daha Manuel kapat."
+        else:
+            out["error"] = pmh.pm_last_order_error()
     elif targeted and closed == 0:
         out["error"] = "Pozisyon bulunamadı"
     return out
 
 
 def _source_id_in_history(history: list, source_id: str) -> bool:
+    """Gerçek kapanış var mı — 0$ hayalet reconcile tekrar açmayı engellemesin."""
     sid = str(source_id or "")
     if not sid:
         return False
     for t in reversed(history[-300:]):
-        if str(t.get("source_position_id") or "") == sid:
-            return True
+        if str(t.get("source_position_id") or "") != sid:
+            continue
+        if _is_ghost_external_close(t):
+            continue
+        return True
     return False
 
 
-def reconcile_external_closes(spec: LiveSpec) -> dict:
-    """Defterde açık, zincirde share yok → PM tarafında satılmış say."""
+def _is_ghost_external_close(t: dict) -> bool:
+    if t.get("settle_source") != "pm_external_close":
+        return False
+    try:
+        return float(t.get("pm_proceeds") or 0) <= 0.01
+    except (TypeError, ValueError):
+        return True
+
+
+def _pos_age_sec(pos: dict) -> float | None:
+    raw = pos.get("entry_time_tr") or ""
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_TZ_TR)
+        now = datetime.now(timezone.utc).astimezone(_TZ_TR)
+        return max(0.0, (now - ts).total_seconds())
+    except Exception:
+        return None
+
+
+def recover_ghost_closes(spec: LiveSpec) -> int:
+    """Satışsız reconcile ile düşen, zincirde hâlâ duran pozisyonu deftere geri yaz."""
     import pm_trader_helpers as pmh
+
+    history = load_history(spec)
+    state = load_state(spec)
+    opens = list(state.get("open_positions") or [])
+    open_sids = {str(p.get("source_position_id") or "") for p in opens}
+    open_tids = {str(p.get("pm_token_id") or "") for p in opens if p.get("pm_token_id")}
+    restored = 0
+    keep_hist: list[dict] = []
+    for t in history:
+        if not _is_ghost_external_close(t):
+            keep_hist.append(t)
+            continue
+        sid = str(t.get("source_position_id") or "")
+        tid = str(t.get("pm_token_id") or "")
+        if sid and sid in open_sids:
+            keep_hist.append(t)
+            continue
+        if not tid and t.get("pm_slug"):
+            hit = pmh.pm_live_position_by_slug(str(t["pm_slug"]))
+            if hit:
+                tid = str(hit["token_id"])
+                t["pm_token_id"] = tid
+        held = -1.0
+        if tid:
+            try:
+                held = pmh.pm_conditional_shares(tid, refresh=True)
+            except Exception:
+                held = -1.0
+            if held < 0.5:
+                hit = pmh.pm_live_position_by_slug(str(t.get("pm_slug") or ""))
+                if hit and str(hit["token_id"]) == tid:
+                    held = float(hit["size"])
+        if held < 0.5:
+            keep_hist.append(t)
+            continue
+        if tid and tid in open_tids:
+            continue
+        pos = {
+            "symbol": t.get("symbol"),
+            "predicted_dir": t.get("predicted_dir"),
+            "entry_price": t.get("entry_price"),
+            "entry_time_tr": t.get("entry_time_tr"),
+            "entry_hour_tr": t.get("entry_hour_tr"),
+            "entry_dow": t.get("entry_dow"),
+            "amount": t.get("amount"),
+            "algo_name": t.get("algo_name"),
+            "mirrored_from_source": t.get("mirrored_from_source"),
+            "source_position_id": t.get("source_position_id"),
+            "pm_slug": t.get("pm_slug"),
+            "pm_token_id": tid,
+            "pm_token_dir": t.get("predicted_dir"),
+            "pm_size": held,
+            "pm_entry_price": t.get("pm_entry_price") or t.get("source_price_now"),
+            "pm_spent": t.get("pm_spent") or t.get("amount") or 0,
+            "pm_live": True,
+        }
+        opens.append(pos)
+        open_sids.add(sid)
+        open_tids.add(tid)
+        try:
+            state["total_pnl"] = round(
+                float(state.get("total_pnl") or 0) - float(t.get("pnl") or 0), 2
+            )
+        except (TypeError, ValueError):
+            pass
+        restored += 1
+        print(f"[{spec.label} reconcile] {_sym_short(t.get('symbol') or '')} "
+              f"hayalet kapanış geri alındı ({held:g} share)")
+    if not restored:
+        return 0
+    state["open_positions"] = opens
+    save_state(spec, state)
+    save_history(spec, keep_hist)
+    return restored
+
+
+def reconcile_external_closes(spec: LiveSpec) -> dict:
+    """Defterde açık, zincirde share yok ve gerçek SELL varsa satılmış say.
+
+    Yeni alınan share CLOB'da birkaç saniye 0 görünebilir — satış teyidi
+    yoksa defterden düşme. Hayalet kapanışı geri al.
+    """
+    import time
+    import pm_trader_helpers as pmh
+
+    recover_ghost_closes(spec)
 
     state = load_state(spec)
     opens = list(state.get("open_positions") or [])
@@ -524,20 +647,42 @@ def reconcile_external_closes(spec: LiveSpec) -> dict:
         if not tid:
             kalan.append(pos)
             continue
+        age = _pos_age_sec(pos)
+        if age is not None and age < 120:
+            kalan.append(pos)
+            continue
         try:
-            held = pmh.pm_conditional_shares(str(tid))
+            held = pmh.pm_conditional_shares(str(tid), refresh=True)
         except Exception:
             kalan.append(pos)
             continue
+        if held < 0:
+            kalan.append(pos)
+            continue
+        if 0 <= held < 0.5:
+            time.sleep(1.2)
+            try:
+                held = pmh.pm_conditional_shares(str(tid), refresh=True)
+            except Exception:
+                held = -1.0
         if held < 0 or held >= 0.5:
             kalan.append(pos)
             continue
 
         fill = pmh.pm_recent_sell(str(tid))
+        if not fill:
+            print(
+                f"[{spec.label} reconcile] {_sym_short(pos.get('symbol') or '')} "
+                f"share 0 ama SELL yok — defterde kaldı",
+                file=sys.stderr,
+            )
+            kalan.append(pos)
+            continue
+
         spent = float(pos.get("pm_spent") or pos.get("amount") or 0)
-        proceeds = float(fill["proceeds"]) if fill else 0.0
-        price = float(fill["price"]) if fill else 0.0
-        size = float(fill["size"]) if fill else float(pos.get("pm_size") or 0)
+        proceeds = float(fill["proceeds"])
+        price = float(fill["price"])
+        size = float(fill["size"])
         pnl = round(proceeds - spent, 2)
         tur_pnl += pnl
         closed += 1
@@ -561,6 +706,7 @@ def reconcile_external_closes(spec: LiveSpec) -> dict:
             "pm_exit_price": price,
             "pm_proceeds": proceeds,
             "pm_slug": pos.get("pm_slug"),
+            "pm_token_id": tid,
             "algo_name": pos.get("algo_name", spec.algo_name),
             "algo_num": 0,
             "settle_source": "pm_external_close",
@@ -572,7 +718,7 @@ def reconcile_external_closes(spec: LiveSpec) -> dict:
             f"{'✅' if pnl >= 0 else '❌'} {_sym_short(sym)}  {size:g} share "
             f"@ {price:.2f} → ${proceeds:.2f}  ({'+' if pnl >= 0 else ''}{pnl:.2f}$)"
         )
-        print(f"[{spec.label} reconcile] {_sym_short(sym)} PM'de yok — "
+        print(f"[{spec.label} reconcile] {_sym_short(sym)} PM'de satılmış — "
               f"defterden düşüldü {pnl:+.2f}$")
 
     if not closed:
@@ -605,10 +751,12 @@ def _manual_close_match(
         return False
     if token_id and str(tid) != str(token_id):
         return False
-    if source and str(pos.get("mirrored_from_source") or "") != str(source):
-        return False
-    if hour_tr is not None and pos.get("entry_hour_tr") != hour_tr:
-        return False
+    # Karttaki token yeterli; source/saat uyuşmazsa aynı token atlanmasın
+    if not token_id:
+        if source and str(pos.get("mirrored_from_source") or "") != str(source):
+            return False
+        if hour_tr is not None and pos.get("entry_hour_tr") != hour_tr:
+            return False
     if symbols:
         sym = pos.get("symbol") or ""
         if sym.upper() not in symbols and _sym_short(sym).upper() not in symbols:
@@ -727,12 +875,20 @@ def _load_signal_module(spec: LiveSpec):
     return importlib.import_module(spec.signal_module)
 
 
+def _open_for_symbol_slot(state: dict, sym: str, hour_tr: int) -> dict | None:
+    """Aynı sembol+saat — kaynak fark etmez. Zıt yön hedge yasak."""
+    for p in state.get("open_positions") or []:
+        if p.get("symbol") == sym and p.get("entry_hour_tr") == hour_tr:
+            return p
+    return None
+
+
 def _live_has_symbol_slot(state: dict, sym: str, hour_tr: int,
                           *, source: str | None = None) -> bool:
     """Bu sembol+saat zaten açık mı.
 
-    source verilirse yalnızca o kaynak defterin açtığı pozisyona bakılır;
-    farklı algoritmalar aynı sembolde ayrı pozisyon açabilsin diye.
+    source verilirse yalnızca o kaynak; verilmezse herhangi bir kaynak yeter
+    (aynı saatte SOL UP + SOL DOWN hedge açılmasın).
     """
     for p in state.get("open_positions") or []:
         if p.get("symbol") != sym or p.get("entry_hour_tr") != hour_tr:
@@ -863,6 +1019,17 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
             p["prediction_tr"] = p.get("prediction_tr") or slot.get("prediction_tr")
             by_symbol.setdefault(sym, []).append((book, p, meta))
 
+    local_dirs: dict[str, set[str]] = {}
+    local_state = load_state(spec)
+    for lp in local_state.get("open_positions") or []:
+        if lp.get("entry_hour_tr") != hour_tr:
+            continue
+        lsym = lp.get("symbol") or ""
+        ld = str(lp.get("predicted_dir") or lp.get("pm_token_dir") or "").upper()
+        if not lsym or ld not in ("UP", "DOWN"):
+            continue
+        local_dirs.setdefault(lsym, set()).add(ld)
+
     if not by_symbol:
         print(f"[{spec.label} mirror] kaynaklarda kopyalanacak pozisyon yok")
         return
@@ -872,8 +1039,11 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
     plan: list[tuple[str, str, dict, dict]] = []
     for sym, entries in by_symbol.items():
         dirs = {str(p.get("dir")).upper() for _, p, _ in entries}
+        dirs |= local_dirs.get(sym, set())
         if len(dirs) > 1:
             detail = ", ".join(f"{b}:{str(p.get('dir')).upper()}" for b, p, _ in entries)
+            if local_dirs.get(sym):
+                detail += f", açık:{'/'.join(sorted(local_dirs[sym]))}"
             print(f"[{spec.label} mirror] {_sym_short(sym)} — kaynaklar çelişiyor "
                   f"({detail}), atlandı")
             continue
@@ -889,11 +1059,22 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
     state = load_state(spec)
     _, _, hata = _paths(spec)
     pmh.PM_DRY_RUN = False
+    min_profit = pmh.load_min_profit_pct()
+    profit_cap = pmh.max_price_for_profit_pct(min_profit) if min_profit > 0 else None
 
     opened: list[tuple[str, str, float, dict]] = []
     for sym, book, p, meta in plan:
         direction = str(p.get("dir") or "").upper()
-        if _live_has_symbol_slot(state, sym, hour_tr, source=book):
+        existing = _open_for_symbol_slot(state, sym, hour_tr)
+        if existing:
+            ex_src = existing.get("mirrored_from_source") or "?"
+            ex_dir = existing.get("predicted_dir") or existing.get("pm_token_dir") or "?"
+            if str(ex_src) != str(book) or str(ex_dir).upper() != direction:
+                print(
+                    f"[{spec.label} mirror] {_sym_short(sym)} zaten açık "
+                    f"({ex_src} {ex_dir}) — {book} {direction} açılmadı",
+                    flush=True,
+                )
             continue
         sid = p.get("position_id")
         if sid and _source_id_in_history(history, sid):
@@ -929,6 +1110,9 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
             print(f"[{spec.label} mirror] {_sym_short(sym)} — bahis ${amount:.2f} < "
                   f"kaynağın alt sınırı ${float(min_stake):.2f}, emir açılmadı")
             continue
+        # Kaynağın tavanı ile asgari kâr tavanının sıkı olanı geçerli.
+        if profit_cap is not None:
+            guards["max_price"] = min(float(guards["max_price"]), profit_cap)
         if dry:
             print(f"[{spec.label} mirror·DRY] {book} · {_sym_short(sym)} {direction} "
                   f"${amount:.2f} token {token_id[:12]}… kaynak {p.get('pm_entry_price')} "
@@ -937,6 +1121,7 @@ def run_open_mirror(spec: LiveSpec, *, dry: bool = False) -> None:
         order = pmh.pm_place_order(
             token_id, amount, str(p.get("pm_tick_size") or "0.01"),
             bool(p.get("pm_neg_risk")), label=spec.label, hata_file=hata,
+            min_profit_pct=min_profit or None,
             **guards,
         )
         if not order:

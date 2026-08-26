@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """CoptC Live Control — API mirror tek giriş noktası.
 
-Live AÇIK: :02:08–:08:00 arası 10 sn'de bir kaynak API → PM mirror.
+Live AÇIK: :02:00–:09:00 arası 4 sn'de bir kaynak API → PM mirror.
 A2#05 / V2 :02 açar; A1 (analiz1) :05 açar — poll ikisini de kapsar.
 Live KAPALI: işlem açılmaz.
 
 Modlar
     close       :01   live kapat + redeem
     open        :02   live-open ile aynı
-    live-open   :02   :02:08…:08:00 API poll + mirror
+    live-open   :02   :02:00…:09:00 API poll + mirror
     settle      :12   live kapanış tekrarı
     status             live defter özeti
 """
@@ -31,6 +31,7 @@ _LOCK = os.path.join(_POLY, ".coptc_open.lock")
 _LIVE_SCRIPT = "coptc_live.py"
 _LIVE_GROUP = "coptc_live"
 _MIRROR_TICK_TIMEOUT = 170
+_MIRROR_POLL_SEC = 4
 
 
 def _load_env() -> None:
@@ -108,14 +109,14 @@ def _stamp(mode: str) -> None:
 
 
 def _mirror_poll_window(now_tr: datetime | None = None) -> tuple[datetime, datetime]:
-    """Bu saatin mirror poll penceresi: :02:08 … :08:00.
+    """Bu saatin mirror poll penceresi: :02:00 … :09:00.
 
-    A2#05/V2 :02 açar; analiz1 (A1) :05 açar. Eski tavan :05:00 A1'i
-    tam açıldığı anda kesiyordu.
+    :01 hâlâ kapanış. Yeni slot :02. A1 :07 açınca :08 bitişi
+    son saniyeleri kaçırıyordu — :09'a kadar bak.
     """
     now_tr = now_tr or datetime.now(_TZ)
     base = now_tr.replace(minute=0, second=0, microsecond=0)
-    return base.replace(minute=2, second=8), base.replace(minute=8, second=0)
+    return base.replace(minute=2, second=0), base.replace(minute=9, second=0)
 
 
 def _wait_until(target: datetime) -> None:
@@ -172,33 +173,31 @@ def run_live_open() -> None:
         print(f"[CoptC] mirror poll penceresi kapalı ({start:%H:%M}–{end:%H:%M})", flush=True)
         return
 
-    try:
-        with _open_gate(wait=45):
-            poll_at = max(start, datetime.now(_TZ))
-            n = 0
-            print(
-                f"[CoptC] mirror poll başladı — {start:%H:%M:%S}…{end:%H:%M:%S}, 10 sn aralık",
-                flush=True,
-            )
-            while poll_at <= end:
-                if poll_at > datetime.now(_TZ):
-                    _wait_until(poll_at)
-                if datetime.now(_TZ) > end:
-                    break
-                n += 1
-                tick = datetime.now(_TZ)
-                print(f"[CoptC] mirror poll #{n} @ {tick:%H:%M:%S}", flush=True)
-                # Emir yeniden denemeleri ~95 sn sürebiliyor; kısa timeout turu
-                # state yazılmadan öldürür ve sonraki tur aynı emri tekrar girer.
+    poll_at = max(start, datetime.now(_TZ))
+    n = 0
+    print(
+        f"[CoptC] mirror poll başladı — {start:%H:%M:%S}…{end:%H:%M:%S}, "
+        f"{_MIRROR_POLL_SEC} sn aralık",
+        flush=True,
+    )
+    while poll_at <= end:
+        if poll_at > datetime.now(_TZ):
+            _wait_until(poll_at)
+        if datetime.now(_TZ) > end:
+            break
+        n += 1
+        tick = datetime.now(_TZ)
+        print(f"[CoptC] mirror poll #{n} @ {tick:%H:%M:%S}", flush=True)
+        try:
+            with _open_gate(wait=15):
                 _run(_LIVE_SCRIPT, "mirror", timeout=_MIRROR_TICK_TIMEOUT)
-                # Tur uzun sürdüyse kaçan slotları atla — yoksa aralıksız ateşler.
-                poll_at += timedelta(seconds=10)
-                now_tr = datetime.now(_TZ)
-                while poll_at <= now_tr:
-                    poll_at += timedelta(seconds=10)
-            print(f"[CoptC] mirror poll bitti — {n} tur", flush=True)
-    except _GateBusy:
-        print("[CoptC] başka bir açılış turu sürüyor — bu tur atlandı", flush=True)
+        except _GateBusy:
+            print("[CoptC] kilit meşgul (manuel kapat?) — bu tick atlandı", flush=True)
+        poll_at += timedelta(seconds=_MIRROR_POLL_SEC)
+        now_tr = datetime.now(_TZ)
+        while poll_at <= now_tr:
+            poll_at += timedelta(seconds=_MIRROR_POLL_SEC)
+    print(f"[CoptC] mirror poll bitti — {n} tur", flush=True)
 
 
 def run_settle() -> None:

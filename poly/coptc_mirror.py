@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import time as _time
 import urllib.error
 import urllib.request
 from datetime import datetime, time, timedelta
@@ -266,3 +267,45 @@ def open_positions_with_meta(
         now_tr=now_tr,
     )
     return rows, skipped, data
+
+
+_CONS_CACHE: dict = {"t": 0.0, "data": None}
+
+
+def consensus_url() -> str:
+    custom = (os.getenv("MIRROR_CONSENSUS_URL") or "").strip()
+    if custom:
+        return custom.rstrip("/")
+    mirror = api_url()
+    if mirror.endswith("/mirror"):
+        return mirror[:-7] + "/consensus"
+    return "https://bursaapp.com/poly/api/consensus"
+
+
+def fetch_consensus() -> dict:
+    """69 defter oyu — BTC/ETH/SOL. 60s cache."""
+    now = _time.time()
+    cached = _CONS_CACHE.get("data")
+    if isinstance(cached, dict) and now - float(_CONS_CACHE.get("t") or 0) < 60:
+        return cached
+    token = api_token()
+    if not token:
+        return {"ok": False, "coins": []}
+    req = urllib.request.Request(
+        consensus_url(),
+        headers={
+            "X-Mirror-Token": token,
+            "Accept": "application/json",
+            "User-Agent": "CoptC Live Control-mirror",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = json.loads(r.read().decode())
+    except Exception:
+        return cached if isinstance(cached, dict) else {"ok": False, "coins": []}
+    if not isinstance(data, dict):
+        return {"ok": False, "coins": []}
+    _CONS_CACHE["t"] = now
+    _CONS_CACHE["data"] = data
+    return data

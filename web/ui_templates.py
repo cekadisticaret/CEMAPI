@@ -19,6 +19,14 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
         Dashboard
       </a>
+      <a class="nav-item" href="{{ base }}/islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
+        İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/grafik-analiz">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
+        Grafik Analiz
+      </a>
       <a class="nav-item" href="{{ base }}/ayarlar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
         Ayarlar
@@ -26,7 +34,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
     </nav>
     <div class="sidebar-foot">
       <b>Mirror modu</b>
-      Kaynak defterin pozisyonları otomatik kopyalanır. :02:08–:08 arası 10 sn poll.
+      Kaynak defterin pozisyonları otomatik kopyalanır. :02:00–:09 arası 4 sn poll.
     </div>
   </aside>
 
@@ -48,6 +56,8 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
       </div>
       <div class="topbar-mobile">
         <button type="button" class="btn btn-mlive danger" id="mLive">Live kapat</button>
+        <button type="button" class="btn" id="mDesk">İşlemler</button>
+        <button type="button" class="btn" id="mGa">Grafik Analiz</button>
         <button type="button" class="btn btn-mset" id="mSet">Ayarlar</button>
       </div>
     </header>
@@ -69,6 +79,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
           <div id="pos"></div>
         </div>
 
+        <div class="cons-strip" id="cons"></div>
         <div class="syms" id="syms">
           {% for i in range(3) %}
           <div class="sym nu"><div class="sym-top"><span class="sym-name">—</span></div>
@@ -322,11 +333,13 @@ function render(d){
     </div>`;
 
   $('wpmbal').textContent = money(d.cash);
-  $('wpmsub').textContent = d.equity != null
-    ? `Anlık toplam ${money(d.equity)} · serbest USDC`
-    : (d.cash === null ? 'cüzdan tanımsız' : 'Serbest USDC');
+  const srcHint = d.cash_stale || d.cash_source === 'cache' ? ' · son okunan'
+    : (d.cash_source === 'chain' ? ' · zincir' : '');
+  $('wpmsub').innerHTML = d.equity != null
+    ? `<span class="wallet-equity">Anlık toplam ${money(d.equity)}</span> · serbest USDC${srcHint}`
+    : (d.cash === null ? 'CLOB yanıt vermedi' : 'Serbest USDC' + srcHint);
   const wc = document.querySelector('.wallet-card');
-  const walletTotal = d.cash != null ? d.cash : d.equity;
+  const walletTotal = d.equity != null ? d.equity : d.cash;
   if (wc) {
     wc.classList.toggle('ok', walletTotal != null && walletTotal > 1000);
     wc.classList.toggle('warn', walletTotal != null && walletTotal <= 1000);
@@ -337,14 +350,13 @@ function render(d){
 
   $('pos').innerHTML = d.positions.length
     ? `<div class="pgrid">${d.positions.map(posCard).join('')}</div>`
-    : `<div class="empty">${d.live_on ? 'Kaynak açınca :02:08–:08 arası PM emri açılır' : 'Live kapalı'}</div>`;
+    : `<div class="empty">${d.live_on ? 'Kaynak açınca :02:00–:09 arası PM emri açılır' : 'Live kapalı'}</div>`;
   const nPos = d.positions.length;
   $('posCount').textContent = nPos ? `(${nPos})` : '';
   $('posSection').classList.toggle('has-pos', nPos > 0);
   $('posBadge').textContent = nPos ? `${nPos} AÇIK` : 'BOŞ';
   $('posBadge').className = 'status ' + (nPos ? 'ok' : 'wait');
   POS_N = nPos;
-  // Tümünü kapat — panelden kapalı (CLOSE_ALL_ENABLED)
   if (CLOSE_ALL_ENABLED && !CLOSING){
     const bca = $('bcloseall');
     bca.style.display = nPos ? '' : 'none';
@@ -378,6 +390,26 @@ async function load(){
   }
 }
 
+function renderCons(d){
+  const el = $('cons'); if (!el) return;
+  if (!d || !d.ok){ el.innerHTML = ''; return; }
+  const coins = (d.coins || []).map(c => {
+    const up = c.dir === 'UP';
+    return `<span class="cons-chip ${up ? 'up' : 'dn'}"><b>${c.symbol} ${c.label || ''}</b><em>↑${c.up} ↓${c.down}</em><i>%${Math.round(+c.wr || 0)}</i></span>`;
+  }).join('');
+  const st = d.stats || {};
+  const slot = (d.slot_open_tr || '') + (d.books != null ? ` · ${d.books} defter` : '');
+  el.innerHTML = `<span class="cons-slot">:${String(d.slot ?? '').padStart(2,'0')} ${slot}</span>${coins}<span class="cons-wr">${st.label || ''}</span>`;
+}
+
+async function loadCons(){
+  try{
+    const r = await fetch(BASE + '/api/consensus', {cache:'no-store'});
+    if (r.status === 401) return;
+    renderCons(await r.json());
+  } catch(e){}
+}
+
 async function signals(){
   $('bsig').disabled = true; $('bsig2').style.opacity = '.5';
   try{
@@ -406,6 +438,8 @@ async function toggleLive(){
 }
 if ($('mLive')) $('mLive').onclick = toggleLive;
 if ($('mSet')) $('mSet').onclick = () => location.href = BASE + '/ayarlar';
+if ($('mDesk')) $('mDesk').onclick = () => location.href = BASE + '/islemler';
+if ($('mGa')) $('mGa').onclick = () => location.href = BASE + '/grafik-analiz';
 $('qaLive').onclick = toggleLive;
 $('qhist').oninput = e => renderHist(e.target.value);
 
@@ -483,8 +517,9 @@ $('posSection').addEventListener('click', e => {
   if (btn) closeOne(btn);
 });
 
-load().then(signals);
+load().then(signals); loadCons();
 setInterval(load, 30000);
+setInterval(loadCons, 60000);
 </script></body></html>"""
 
 SETTINGS = r"""<!doctype html><html lang="tr"><head>
@@ -505,6 +540,14 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
       <a class="nav-item" href="{{ base }}/">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
         Dashboard
+      </a>
+      <a class="nav-item" href="{{ base }}/islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
+        İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/grafik-analiz">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
+        Grafik Analiz
       </a>
       <a class="nav-item on" href="{{ base }}/ayarlar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
@@ -528,7 +571,7 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
 
     <div class="cron-strip">
       <span><b>:01</b> Eski slot kapanır</span>
-      <span><b>:02:08–:08</b> Live PM aç (10 sn poll)</span>
+      <span><b>:02:00–:09</b> Live PM aç (4 sn poll)</span>
       <span><b>Cum 22:00 – Pzt 11:00</b> HS otomatik penceresi</span>
     </div>
 
@@ -553,30 +596,23 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
         <div class="card">
           <div class="card-hd"><span class="card-title">Giriş tutarları</span></div>
           <div class="stat-row" style="grid-template-columns:repeat(3,1fr)" id="abox"></div>
-          <div class="amt-src">A2#05 V2</div>
+          <div class="amt-src" id="amtSrc">Seçili kaynak</div>
           <div class="form-row amount-row">
             <label>Low (WR &lt; 50%)<input id="alow" type="number" step="0.5" min="1"></label>
             <label>Mid<input id="amid" type="number" step="0.5" min="1"></label>
             <label>High<input id="ahigh" type="number" step="0.5" min="1"></label>
-          </div>
-          <div class="amt-src">A1</div>
-          <div class="form-row amount-row">
-            <label>Low (WR &lt; 50%)<input id="a1low" type="number" step="0.5" min="1"></label>
-            <label>Mid<input id="a1mid" type="number" step="0.5" min="1"></label>
-            <label>High<input id="a1high" type="number" step="0.5" min="1"></label>
-          </div>
-          <div class="amt-src">C1#01</div>
-          <div class="form-row amount-row">
-            <label>Low (WR &lt; 50%)<input id="c1low" type="number" step="0.5" min="1"></label>
-            <label>Mid<input id="c1mid" type="number" step="0.5" min="1"></label>
-            <label>High<input id="c1high" type="number" step="0.5" min="1"></label>
             <button class="btn primary" id="bsave">Kaydet</button>
+          </div>
+          <div class="amt-src">Asgari kâr — tüm API algoritmaları</div>
+          <div class="form-row amount-row">
+            <label>Kâr eşiği (%)<input id="mprofit" type="number" step="1" min="0" max="900"></label>
+            <div class="hint" id="mprofithint">—</div>
           </div>
           <div class="cold-cut-row">
             <button class="btn primary" id="bcoldcut">Zayıf saat −30%: —</button>
             <div class="hint" id="coldhint">Geçmişte en düşük WR'li saatlerde giriş tutarı otomatik −30% indirilir.</div>
           </div>
-            <div class="hint" id="ahint">Sembol win rate'e göre kademe. A2, A1 ve C1#01 ayrı tutarlar — birlikte seçilince her kaynak kendi kademesini kullanır.</div>
+            <div class="hint" id="ahint">API’den seçilen her algoritma bu Low/Mid/High ile açılır.</div>
         </div>
 
         <div class="card settings-full">
@@ -679,7 +715,7 @@ function render(d){
   $('lvst').textContent = d.live_on ? src + ' kaynağından live AÇIK' : 'Gerçek para işlemi KAPALI';
   $('lvst').className = 'lvst ' + (d.live_on ? 'g' : 'b');
   $('lvhint').textContent = d.live_on
-    ? 'Her saat :02:08–:08 arası kaynak 10 sn\'de bir okunur, PM emri açılır.'
+    ? 'Her saat :02:00–:09 arası kaynak 4 sn\'de bir okunur, PM emri açılır.'
     : 'Cron çalışır ama emir gönderilmez.';
   $('blive').textContent = d.live_on ? 'Live kapat' : 'Live aç';
   $('blive').className = 'btn ' + (d.live_on ? 'danger' : 'success');
@@ -690,13 +726,20 @@ function render(d){
     <div class="stat"><div class="stat-label">Açık</div><div class="stat-val">${a.open}</div></div>`;
   if (document.activeElement.tagName !== 'INPUT'){
     $('alow').value = a.low; $('amid').value = a.mid; $('ahigh').value = a.high;
-    const a1 = a.a1 || {};
-    if ($('a1low')) { $('a1low').value = a1.low ?? 16; $('a1mid').value = a1.mid ?? 24; $('a1high').value = a1.high ?? 32; }
-    const c1 = a.c1 || {};
-    if ($('c1low')) { $('c1low').value = c1.low ?? 6; $('c1mid').value = c1.mid ?? 7; $('c1high').value = c1.high ?? 8; }
+    if ($('mprofit')) $('mprofit').value = a.min_profit_pct ?? 60;
   }
+  renderProfitHint(a.min_profit_pct, a.min_profit_max_price);
   renderColdCut(a.cold_hour_cut_enabled);
   drawMirror();
+}
+
+function renderProfitHint(pct, cap){
+  const el = $('mprofithint');
+  if (!el) return;
+  const p = pct == null ? 60 : pct;
+  el.textContent = `Kazanınca kâr, harcanan paranın %${p} altındaysa işlem açılmaz `
+    + `— token fiyatı en fazla ${(cap ?? (1/(1+p/100))).toFixed(3)}. `
+    + `Her API algoritması için geçerli.`;
 }
 
 function renderColdCut(on){
@@ -717,8 +760,6 @@ async function toggleColdCut(){
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         low: +$('alow').value, mid: +$('amid').value, high: +$('ahigh').value,
-        a1_low: +$('a1low').value, a1_mid: +$('a1mid').value, a1_high: +$('a1high').value,
-        c1_low: +$('c1low').value, c1_mid: +$('c1mid').value, c1_high: +$('c1high').value,
         cold_hour_cut_enabled: on,
       }),
     });
@@ -782,6 +823,9 @@ function drawMirror(){
   $('mnow').className = 'msel-now' + (chg ? ' dirty' : '');
   $('msave').disabled = !chg;
   $('mreset').disabled = !chg;
+  if ($('amtSrc')) $('amtSrc').textContent = cur.length
+    ? 'Seçili kaynak: ' + cur.map(bookName).join(' + ')
+    : 'Seçili kaynak';
 }
 
 function toggle(book){
@@ -853,8 +897,7 @@ $('bsave').onclick = async () => {
   const r = await fetch(BASE + `/api/${BOOK}/amounts`, {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({
       low: +$('alow').value, mid: +$('amid').value, high: +$('ahigh').value,
-      a1_low: +$('a1low').value, a1_mid: +$('a1mid').value, a1_high: +$('a1high').value,
-      c1_low: +$('c1low').value, c1_mid: +$('c1mid').value, c1_high: +$('c1high').value,
+      min_profit_pct: +$('mprofit').value,
       cold_hour_cut_enabled: COLD_CUT_ON,
     })});
   $('ahint').textContent = r.ok ? 'Kaydedildi.' : 'Kaydedilemedi.'; $('bsave').disabled = false; load();
@@ -900,6 +943,890 @@ async function signals(){
 $('bref').onclick = () => load();
 $('bsig').onclick = signals;
 load(); loadMirror(); loadWd(); setInterval(loadMirror, 60000); setInterval(load, 30000);
+</script></body></html>"""
+
+TRADES = r"""<!doctype html><html lang="tr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
+<title>{{ app_name }} — İşlemler</title>
+</head><body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">C</div>
+      <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
+    </div>
+    <nav class="nav">
+      <a class="nav-item" href="{{ base }}/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+        Dashboard
+      </a>
+      <a class="nav-item on" href="{{ base }}/islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
+        İşlemler
+      </a>
+      <a class="nav-item" href="{{ base }}/grafik-analiz">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
+        Grafik Analiz
+      </a>
+      <a class="nav-item" href="{{ base }}/ayarlar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        Ayarlar
+      </a>
+    </nav>
+    <div class="sidebar-foot">
+      <b>CLOB kotasyon</b>
+      to win ve gerçek risk Gamma mid değil — anlık ask yürüyüşü.
+    </div>
+  </aside>
+
+  <div class="main desk-page">
+    <header class="topbar">
+      <div>
+        <h1>İşlemler</h1>
+        <div class="topbar-sub">BTC · ETH · SOL — Polymarket anlık</div>
+      </div>
+      <div class="topbar-actions">
+        <span class="clock" id="clock">—</span>
+        <span class="pill" id="bal">—</span>
+      </div>
+      <div class="topbar-mobile">
+        <button type="button" class="btn" id="mDash">Dashboard</button>
+        <button type="button" class="btn btn-mset" id="mSet">Ayarlar</button>
+      </div>
+    </header>
+
+    <div class="desk">
+      <aside class="desk-left">
+        <div class="desk-tabs" id="tabs"></div>
+
+        <div class="desk-sec">
+          <div class="desk-sec-hd">Aktif market</div>
+          <div id="mkts"></div>
+        </div>
+
+        <div class="desk-sec">
+          <div class="desk-sec-hd">Yeni işlem</div>
+          <div class="desk-px">
+            <div><span>Başlangıç</span><b id="pxOpen">—</b></div>
+            <div><span>Anlık</span><b id="pxLast">—</b></div>
+            <div class="desk-dx" id="pxDiff">—</div>
+          </div>
+          <div class="desk-slot" id="slotLine">—</div>
+          <div class="desk-dirs">
+            <button type="button" class="desk-dir up on" id="bUp">Yükselir</button>
+            <button type="button" class="desk-dir dn" id="bDn">Düşer</button>
+          </div>
+          <label class="desk-amt">Tutar ($)
+            <input id="amt" type="number" min="1" max="500" step="1" value="7">
+          </label>
+          <button type="button" class="desk-go" id="bOpen">İşlem Aç</button>
+          <div class="desk-quote" id="qline">CLOB kotasyonu bekleniyor…</div>
+        </div>
+
+        <div class="desk-sec">
+          <div class="desk-sec-hd">Açık pozisyonlar</div>
+          <div id="dpos" class="desk-pos-list"><div class="empty">Bu ekrandan açık işlem yok</div></div>
+        </div>
+      </aside>
+
+      <section class="desk-right">
+        <div class="cons-strip" id="cons"></div>
+        <div class="desk-chart-bar">
+          <div class="desk-iv" id="ivs"></div>
+          <div class="desk-sigs" id="sigs"></div>
+          <div class="desk-chart-meta">
+            <span id="refLbl">Ref —</span>
+            <span id="nowLbl">—</span>
+          </div>
+        </div>
+        <canvas class="desk-chart" id="deskChart"></canvas>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+const BASE = {{ base|tojson }};
+const $ = id => document.getElementById(id);
+const PERIODS = [[5,'5 Dakika'],[15,'15 Dakika'],[60,'1 Saat']];
+const IVS = ['1m','5m','15m','1h'];
+let period = 60, symbol = 'SOLUSDT', dir = 'UP', interval = '1m';
+let snap = null, quote = null, bars = [], overlay = null, busy = false, qBusy = false;
+
+function money(n, d=2){
+  if (n == null || Number.isNaN(+n)) return '—';
+  const x = +n;
+  return (x < 0 ? '-$' : '$') + Math.abs(x).toFixed(d);
+}
+function fmtPx(n){
+  if (n == null) return '—';
+  const x = +n;
+  return x >= 100 ? x.toFixed(2) : x >= 10 ? x.toFixed(3) : x.toFixed(4);
+}
+function leftTxt(sec){
+  sec = Math.max(0, sec|0);
+  const m = Math.floor(sec/60), s = sec % 60;
+  return m + ':' + String(s).padStart(2,'0');
+}
+
+function drawTabs(){
+  $('tabs').innerHTML = PERIODS.map(([p,l]) =>
+    `<button type="button" class="desk-tab${p===period?' on':''}" data-p="${p}">${l}</button>`
+  ).join('');
+  $('tabs').onclick = e => {
+    const b = e.target.closest('[data-p]');
+    if (!b) return;
+    period = +b.dataset.p;
+    interval = period === 60 ? '1m' : (period === 15 ? '1m' : '1m');
+    drawTabs(); loadSnap(); loadQuote(); loadBars();
+  };
+  $('ivs').innerHTML = IVS.map(iv =>
+    `<button type="button" class="desk-ivb${iv===interval?' on':''}" data-iv="${iv}">${iv}</button>`
+  ).join('');
+  $('ivs').onclick = e => {
+    const b = e.target.closest('[data-iv]');
+    if (!b) return;
+    interval = b.dataset.iv;
+    drawTabs(); loadBars();
+  };
+}
+
+function mktOf(sym){
+  return (snap && snap.markets || []).find(m => m.symbol === sym) || null;
+}
+
+function drawMkts(){
+  const rows = (snap && snap.markets) || [];
+  $('mkts').innerHTML = rows.map(m => {
+    const on = m.symbol === symbol ? ' on' : '';
+    const st = m.ok ? '<em class="g">Açık</em>' : '<em class="b">Kapalı</em>';
+    const up = m.up_cent != null ? `UP ${m.up_cent}¢` : 'UP —';
+    const dn = m.down_cent != null ? `DOWN ${m.down_cent}¢` : 'DOWN —';
+    const title = m.title || (m.short + ' Up or Down');
+    return `<button type="button" class="desk-mkt${on}" data-s="${m.symbol}">
+      <div class="desk-mkt-top"><b>${m.short}</b>${st}</div>
+      <div class="desk-mkt-sub">${title}</div>
+      <div class="desk-mkt-odds"><span class="up">${up}</span><span class="dn">${dn}</span></div>
+    </button>`;
+  }).join('') || '<div class="empty">Market yükleniyor…</div>';
+  $('mkts').onclick = e => {
+    const b = e.target.closest('[data-s]');
+    if (!b) return;
+    symbol = b.dataset.s;
+    drawMkts(); fillSpot(); loadQuote(); loadBars();
+  };
+}
+
+function fillSpot(){
+  const m = mktOf(symbol);
+  const slot = snap ? snap.slot_tr : '—';
+  const left = snap ? leftTxt(snap.left_sec) : '—';
+  const pl = period === 60 ? '1saat' : (period + 'dk');
+  $('slotLine').textContent = `${slot} İST · ${pl} · kalan ${left}`;
+  if (!m){ $('pxOpen').textContent='—'; $('pxLast').textContent='—'; $('pxDiff').textContent='—'; $('refLbl').textContent='Ref —'; return; }
+  $('pxOpen').textContent = m.spot_open != null ? money(m.spot_open) : '—';
+  $('pxLast').textContent = m.spot != null ? money(m.spot) : '—';
+  const d = m.spot_diff;
+  const el = $('pxDiff');
+  if (d == null){ el.textContent='—'; el.className='desk-dx'; }
+  else {
+    el.textContent = (d>=0?'+':'') + money(d);
+    el.className = 'desk-dx ' + (d>=0?'g':'b');
+  }
+  $('refLbl').textContent = m.spot_open != null ? `Ref ${fmtPx(m.spot_open)}` : 'Ref —';
+}
+
+function drawQuote(){
+  const el = $('qline');
+  if (!quote){ el.className='desk-quote'; el.textContent='CLOB kotasyonu bekleniyor…'; return; }
+  if (!quote.ok){ el.className='desk-quote bad'; el.textContent = quote.error || 'kotasyon yok'; return; }
+  const net = +quote.net, win = +quote.to_win, risk = +quote.spent, px = +quote.price;
+  el.className = 'desk-quote ok';
+  el.innerHTML = `<b class="${net>=0?'g':'b'}">${net>=0?'+':''}${money(net)}</b>
+    🏆 ${money(win)} to win · gerçek risk ~${money(risk)}
+    <span class="mut">@ ${px.toFixed(2)}</span>`;
+}
+
+function drawPos(){
+  const rows = (snap && snap.positions) || [];
+  if (!rows.length){ $('dpos').innerHTML = '<div class="empty">Bu ekrandan açık işlem yok</div>'; return; }
+  $('dpos').innerHTML = rows.map(p => {
+    const pnl = p.close_pnl;
+    const pc = pnl == null ? '' : (pnl>=0?' g':' b');
+    const pv = pnl == null ? '—' : ((pnl>=0?'+':'')+money(pnl));
+    return `<div class="desk-pos">
+      <div><b>${p.short} ${p.dir}</b> <span class="mut">${p.slot_tr||''}</span></div>
+      <div class="mut">${money(p.pm_spent)} → ${(+p.pm_size||0).toFixed(2)} sh @ ${(+p.pm_entry_price||0).toFixed(2)}</div>
+      <div class="desk-pos-row"><span class="${pc}">${pv}</span>
+        <button type="button" class="btn danger btn-sm" data-id="${p.id}">Kapat</button></div>
+    </div>`;
+  }).join('');
+  $('dpos').onclick = e => {
+    const b = e.target.closest('[data-id]');
+    if (b) closePos(b.dataset.id);
+  };
+}
+
+function setDir(d){
+  dir = d;
+  $('bUp').classList.toggle('on', d==='UP');
+  $('bDn').classList.toggle('on', d==='DOWN');
+  loadQuote();
+}
+
+async function loadSnap(){
+  try{
+    const r = await fetch(BASE + '/api/desk/snapshot?period=' + period, {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
+    if (!r.ok) throw new Error('snapshot');
+    snap = await r.json();
+    if (snap.now_tr) $('clock').textContent = snap.now_tr;
+    if (snap.balance != null) $('bal').textContent = money(snap.balance);
+    drawMkts(); fillSpot(); drawPos(); drawChart();
+  } catch(e){}
+}
+
+async function loadQuote(){
+  const amt = +$('amt').value;
+  if (!(amt >= 1)) { quote = {ok:false, error:'tutar $1+'}; drawQuote(); return; }
+  if (qBusy) return;
+  qBusy = true;
+  try{
+    const u = BASE + `/api/desk/quote?symbol=${symbol}&period=${period}&dir=${dir}&amount=${amt}`;
+    const r = await fetch(u, {cache:'no-store'});
+    quote = await r.json();
+    drawQuote();
+  } catch(e){
+    quote = {ok:false, error:'kotasyon alınamadı'};
+    drawQuote();
+  } finally { qBusy = false; }
+}
+
+async function loadBars(){
+  try{
+    const r = await fetch(BASE + `/api/desk/klines?symbol=${symbol}&interval=${interval}`, {cache:'no-store'});
+    const d = await r.json();
+    bars = d.bars || [];
+    overlay = d.overlay || null;
+    drawSigs();
+    drawChart();
+  } catch(e){ bars = []; }
+}
+
+async function openTrade(){
+  if (busy) return;
+  const amt = +$('amt').value;
+  if (!(amt >= 1 && amt <= 500)) return;
+  if (!quote || !quote.ok){ $('qline').className='desk-quote bad'; $('qline').textContent='Önce canlı kotasyon gelsin'; return; }
+  const msg = `GERÇEK PARA — ${symbol.replace('USDT','')} ${dir} $${amt.toFixed(0)}\n`
+    + `${money(quote.to_win)} to win · gerçek risk ~${money(quote.spent)} @ ${(+quote.price).toFixed(2)}`;
+  if (!confirm(msg)) return;
+  busy = true; $('bOpen').disabled = true; $('bOpen').textContent = 'Gönderiliyor…';
+  try{
+    const r = await fetch(BASE + '/api/desk/open', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({symbol, period, dir, amount: amt}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'emir başarısız');
+    await loadSnap();
+  } catch(e){
+    $('qline').className='desk-quote bad';
+    $('qline').textContent = e.message;
+  } finally {
+    busy = false; $('bOpen').disabled = false; $('bOpen').textContent = 'İşlem Aç';
+  }
+}
+
+async function closePos(id){
+  if (busy) return;
+  if (!confirm('Bu işlemi CLOB bid yürüyüşüyle sat? (yalnızca bu ekranın payı)')) return;
+  busy = true;
+  try{
+    const r = await fetch(BASE + '/api/desk/close', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'kapanmadı');
+    if (d.settled){
+      const p = d.pnl == null ? '' : ((d.pnl >= 0 ? '+' : '') + Number(d.pnl).toFixed(2) + '$');
+      alert('Slot bitmişti, satış yok — sonuç yazıldı ' + p);
+    }
+    await loadSnap();
+  } catch(e){
+    alert(e.message);
+  } finally { busy = false; }
+}
+
+function renderCons(d){
+  const el = $('cons'); if (!el) return;
+  if (!d || !d.ok){ el.innerHTML = ''; return; }
+  const coins = (d.coins || []).map(c => {
+    const up = c.dir === 'UP';
+    return `<span class="cons-chip ${up ? 'up' : 'dn'}"><b>${c.symbol} ${c.label || ''}</b><em>↑${c.up} ↓${c.down}</em><i>%${Math.round(+c.wr || 0)}</i></span>`;
+  }).join('');
+  const st = d.stats || {};
+  const slot = (d.slot_open_tr || '') + (d.books != null ? ` · ${d.books} defter` : '');
+  el.innerHTML = `<span class="cons-slot">:${String(d.slot ?? '').padStart(2,'0')} ${slot}</span>${coins}<span class="cons-wr">${st.label || ''}</span>`;
+}
+
+async function loadCons(){
+  try{
+    const r = await fetch(BASE + '/api/consensus', {cache:'no-store'});
+    if (r.status === 401) return;
+    renderCons(await r.json());
+  } catch(e){}
+}
+
+function fmtSd(n){
+  if (n == null) return '—';
+  const x = +n;
+  if (x >= 1000) return '$' + x.toFixed(1);
+  if (x >= 100) return '$' + x.toFixed(2);
+  return '$' + x.toFixed(3);
+}
+
+function drawSigs(){
+  const el = $('sigs');
+  if (!el) return;
+  const ov = overlay;
+  if (!ov || !ov.ok){ el.innerHTML = ''; return; }
+  const sc = ov.mum_skor|0;
+  const s = ov.support != null ? 'S ' + fmtSd(ov.support) : '';
+  const d = ov.resistance != null ? 'D ' + fmtSd(ov.resistance) : '';
+  el.innerHTML = `<span class="desk-mum">Mum skor ${sc} · ${[s,d].filter(Boolean).join(' · ')}</span>`;
+}
+
+function drawChart(){
+  const c = $('deskChart');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (w < 40 || h < 40) return;
+  c.style.width = w + 'px';
+  c.style.height = h + 'px';
+  c.width = Math.floor(w * dpr); c.height = Math.floor(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = '#0f1117';
+  ctx.fillRect(0,0,w,h);
+  if (!bars.length){
+    ctx.fillStyle = '#636b7e';
+    ctx.font = '13px Inter,sans-serif';
+    ctx.fillText('grafik yükleniyor…', 16, 28);
+    return;
+  }
+  const padL = 8, padR = 78, padT = 12, volH = Math.floor(h * 0.18);
+  const ch = h - volH - 28 - padT;
+  const n = bars.length;
+  const mid = bars[n-1].c;
+  const lvPrices = [];
+  if (overlay && overlay.ok){
+    if (overlay.support != null && Math.abs(overlay.support - mid) / mid < 0.025) lvPrices.push(overlay.support);
+    if (overlay.resistance != null && Math.abs(overlay.resistance - mid) / mid < 0.025) lvPrices.push(overlay.resistance);
+  }
+  const hi = Math.max(...bars.map(b => b.h), ...lvPrices);
+  const lo = Math.min(...bars.map(b => b.l), ...lvPrices);
+  const span = Math.max(1e-8, hi - lo);
+  const m = mktOf(symbol);
+  const ref = m && m.spot_open;
+  const yOf = v => padT + (1 - (v - lo) / span) * ch;
+  const bw = Math.max(2, (w - padL - padR) / n - 1.4);
+  ctx.strokeStyle = 'rgba(255,255,255,.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++){
+    const y = padT + ch * i / 4;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w-padR, y); ctx.stroke();
+  }
+  const last = bars[n-1].c;
+  const tags = [];
+  const addLine = (px, col) => {
+    if (px == null || px < lo || px > hi) return null;
+    const y = yOf(px);
+    ctx.setLineDash([]);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w-padR, y); ctx.stroke();
+    return y;
+  };
+  if (overlay && overlay.ok){
+    const yr = addLine(overlay.resistance, '#f472b6');
+    if (yr != null) tags.push({y: yr, bg:'#f472b6', fg:'#2a0a18', title:'Direnç', px: overlay.resistance});
+    const ys = addLine(overlay.support, '#4ade80');
+    if (ys != null) tags.push({y: ys, bg:'#4ade80', fg:'#052e16', title:'Destek', px: overlay.support});
+  }
+  if (ref != null && ref >= lo && ref <= hi){
+    const y = addLine(ref, '#f59e0b');
+    if (y != null) tags.push({y, bg:'#f59e0b', fg:'#1c1004', title:'Ref', px: ref});
+  }
+  tags.push({y: yOf(last), bg:'#3b82f6', fg:'#fff', title:'', px: last, last: true});
+  tags.sort((a,b) => a.y - b.y);
+  const gap = 36;
+  for (let i = 1; i < tags.length; i++){
+    if (tags[i].y - tags[i-1].y < gap) tags[i].y = tags[i-1].y + gap;
+  }
+  for (let i = tags.length - 2; i >= 0; i--){
+    if (tags[i+1].y - tags[i].y < gap) tags[i].y = tags[i+1].y - gap;
+  }
+  const vmax = Math.max(1, ...bars.map(b => b.v));
+  bars.forEach((b, i) => {
+    const x = padL + i * (w - padL - padR) / n;
+    const up = b.c >= b.o;
+    const col = up ? '#22c55e' : '#ef4444';
+    ctx.strokeStyle = col; ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(x + bw/2, yOf(b.h)); ctx.lineTo(x + bw/2, yOf(b.l)); ctx.stroke();
+    const y1 = yOf(Math.max(b.o, b.c)), y2 = yOf(Math.min(b.o, b.c));
+    ctx.fillRect(x, y1, bw, Math.max(1, y2-y1));
+    const vh = (b.v / vmax) * volH;
+    ctx.globalAlpha = .55;
+    ctx.fillRect(x, h - 10 - vh, bw, vh);
+    ctx.globalAlpha = 1;
+  });
+  tags.forEach(t => {
+    const th = t.last ? 20 : 34;
+    ctx.fillStyle = t.bg;
+    ctx.fillRect(w-padR+2, t.y - th/2, padR-4, th);
+    ctx.fillStyle = t.fg;
+    if (t.last){
+      ctx.font = '700 11px Inter,sans-serif';
+      ctx.fillText(fmtPx(t.px), w-padR+8, t.y + 4);
+    } else {
+      ctx.font = '700 9px Inter,sans-serif';
+      ctx.fillText(t.title, w-padR+8, t.y - 3);
+      ctx.font = '700 11px Inter,sans-serif';
+      ctx.fillText(fmtPx(t.px), w-padR+8, t.y + 12);
+    }
+  });
+  $('nowLbl').textContent = fmtPx(last);
+}
+
+$('bUp').onclick = () => setDir('UP');
+$('bDn').onclick = () => setDir('DOWN');
+$('bOpen').onclick = openTrade;
+$('amt').oninput = () => { quote = null; drawQuote(); loadQuote(); };
+$('mDash').onclick = () => location.href = BASE + '/';
+$('mSet').onclick = () => location.href = BASE + '/ayarlar';
+window.addEventListener('resize', drawChart);
+drawTabs();
+loadSnap(); loadQuote(); loadBars(); loadCons();
+setInterval(loadSnap, 3000);
+setInterval(loadQuote, 1000);
+setInterval(loadBars, 10000);
+setInterval(loadCons, 60000);
+</script></body></html>"""
+
+ANALIZ = r"""<!doctype html><html lang="tr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
+<title>{{ app_name }} — Grafik Analiz</title>
+</head><body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">C</div>
+      <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
+    </div>
+    <nav class="nav">
+      <a class="nav-item" href="{{ base }}/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+        Dashboard
+      </a>
+      <a class="nav-item" href="{{ base }}/islemler">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
+        İşlemler
+      </a>
+      <a class="nav-item on" href="{{ base }}/grafik-analiz">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
+        Grafik Analiz
+      </a>
+      <a class="nav-item" href="{{ base }}/ayarlar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        Ayarlar
+      </a>
+    </nav>
+    <div class="sidebar-foot"><b>1H Confluence</b>4H trend · CVD · OI · ATR kapısı — emir yok.</div>
+  </aside>
+  <div class="main desk-page">
+    <header class="topbar">
+      <div><h1>Grafik Analiz <span class="ga-sym" id="gaSym">BTC</span></h1></div>
+      <div class="topbar-actions">
+        <div class="desk-iv" id="ivs"></div>
+        <span class="ga-sig" id="gaSig"></span>
+        <span class="clock" id="clock">—</span>
+      </div>
+      <div class="topbar-mobile">
+        <button type="button" class="btn" id="mDash">Dashboard</button>
+        <button type="button" class="btn" id="mDesk">İşlemler</button>
+      </div>
+    </header>
+    <div class="ga">
+      <div class="ga-chart">
+        <div class="ga-conf" id="gaConf"></div>
+        <canvas class="desk-chart" id="deskChart"></canvas>
+        <div class="ga-osc-wrap">
+          <div class="ga-osc-bar">
+            <b>MVRVZ-Risk</b>
+            <span id="mvrvzLbl">—</span>
+          </div>
+          <canvas class="ga-osc" id="mvrvzChart"></canvas>
+        </div>
+      </div>
+      <aside class="ga-coins">
+        <div class="ga-coins-head">
+          <input id="qcoin" type="search" placeholder="Ara…" autocomplete="off">
+          <span class="ga-coins-n" id="coinN"></span>
+        </div>
+        <div class="ga-coin-list" id="coins">yükleniyor…</div>
+      </aside>
+    </div>
+  </div>
+</div>
+<script>
+const BASE = {{ base|tojson }};
+const $ = id => document.getElementById(id);
+const PINS = [['BTCUSDT','BTC'],['ETHUSDT','ETH'],['SOLUSDT','SOL']];
+const IVS = ['1m','5m','15m','1h'];
+let symbol = 'BTCUSDT', interval = '1h', bars = [], coins = [], mvrvz = null, conf = null;
+
+function fmtPx(n){
+  if (n == null) return '—';
+  const x = +n;
+  return x >= 1000 ? x.toFixed(1) : x >= 100 ? x.toFixed(2) : x >= 1 ? x.toFixed(3) : x.toFixed(6);
+}
+
+function baseOf(sym){
+  const hit = coins.find(c => c.symbol === sym);
+  if (hit) return hit.base;
+  const pin = PINS.find(([s]) => s === sym);
+  return pin ? pin[1] : String(sym || '').replace(/USDT$/, '');
+}
+
+function syncTitle(){
+  const el = $('gaSym');
+  if (el) el.textContent = baseOf(symbol);
+}
+
+function setSymbol(s){
+  if (!s || s === symbol) { syncTitle(); drawCoins(); return; }
+  symbol = s;
+  syncTitle(); drawCoins(); loadBars(); loadMvrvz(); loadConf();
+}
+
+function drawTabs(){
+  $('ivs').innerHTML = IVS.map(iv =>
+    `<button type="button" class="desk-ivb${iv===interval?' on':''}" data-iv="${iv}">${iv}</button>`).join('');
+  $('ivs').onclick = e => {
+    const b = e.target.closest('[data-iv]'); if (!b) return;
+    interval = b.dataset.iv; drawTabs(); loadBars();
+  };
+}
+
+function drawCoins(){
+  const q = (($('qcoin') && $('qcoin').value) || '').trim().toLowerCase();
+  let rows = coins;
+  if (q) rows = coins.filter(c =>
+    (c.base || '').toLowerCase().includes(q) || (c.symbol || '').toLowerCase().includes(q));
+  if ($('coinN')) $('coinN').textContent = rows.length ? rows.length + ' çift' : '';
+  if (!rows.length){
+    $('coins').innerHTML = '<span style="color:#636b7e;font-size:12px;padding:8px">eşleşme yok</span>';
+    return;
+  }
+  $('coins').innerHTML = rows.map(c => {
+    const chg = +c.chg || 0;
+    const cls = chg > 0 ? 'up' : chg < 0 ? 'dn' : '';
+    const txt = (chg > 0 ? '+' : '') + chg.toFixed(2) + '%';
+    return `<button type="button" class="ga-coin${c.symbol===symbol?' on':''}" data-s="${c.symbol}">
+      <b>${c.base}</b>
+      <span class="px">${fmtPx(c.price)}</span>
+      <span class="chg ${cls}">${txt}</span>
+    </button>`;
+  }).join('');
+}
+
+async function loadCoins(){
+  try{
+    const r = await fetch(BASE + '/api/desk/futures', {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
+    const d = await r.json();
+    coins = d.symbols || [];
+    if (!coins.length){
+      coins = PINS.map(([s,l]) => ({symbol:s, base:l, price:0, chg:0}));
+    }
+    drawCoins(); syncTitle();
+  } catch(e){
+    coins = PINS.map(([s,l]) => ({symbol:s, base:l, price:0, chg:0}));
+    drawCoins(); syncTitle();
+  }
+}
+
+async function loadBars(){
+  try{
+    const r = await fetch(BASE + `/api/desk/klines?symbol=${symbol}&interval=${interval}&overlay=0`, {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
+    const d = await r.json();
+    bars = d.bars || [];
+    $('clock').textContent = new Date().toLocaleString('tr-TR');
+    drawChart();
+  } catch(e){}
+}
+
+async function loadMvrvz(){
+  try{
+    const r = await fetch(BASE + `/api/desk/mvrvz?symbol=${symbol}`, {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
+    mvrvz = await r.json();
+    const el = $('mvrvzLbl');
+    if (el){
+      if (!mvrvz || !mvrvz.ok){ el.textContent = 'veri yok'; el.className = ''; }
+      else {
+        const v = (+mvrvz.risk).toFixed(2);
+        const cls = mvrvz.al ? 'al' : mvrvz.sat ? 'sat' : (mvrvz.risk >= 0.70 ? 'hi' : mvrvz.risk <= 0.20 ? 'lo' : '');
+        const tag = mvrvz.al ? ' · AL' : mvrvz.sat ? ' · SAT' : '';
+        el.className = cls;
+        el.textContent = `${v}${tag}  Z ${(+mvrvz.z).toFixed(2)}`;
+      }
+    }
+    drawOsc();
+  } catch(e){}
+}
+
+function clsDir(v){
+  if (v === 'YUKARI') return 'up';
+  if (v === 'AŞAĞI') return 'dn';
+  if (v === 'AÇIK') return 'ok';
+  if (v === 'KAPALI') return 'off';
+  return '';
+}
+
+function drawConfPanel(){
+  const el = $('gaConf');
+  if (!el) return;
+  if (!conf || !conf.ok){
+    el.innerHTML = '<table><tr><th>Bileşen</th><th>Durum</th></tr><tr><td colspan="2">yükleniyor…</td></tr></table>';
+    return;
+  }
+  const vol = conf.vol_ok ? 'AÇIK' : 'KAPALI';
+  const cvdL = (conf.cvd === 'n/a') ? 'CVD Bias (n/a)' : 'CVD Bias';
+  const oiL = (conf.oi === 'n/a') ? 'OI Rejimi (n/a)' : 'OI Rejimi';
+  el.innerHTML = `<table>
+    <tr><th>Bileşen</th><th>Durum</th></tr>
+    <tr><td>HTF Trend</td><td class="${clsDir(conf.htf)}">${conf.htf}</td></tr>
+    <tr><td>${cvdL}</td><td class="${clsDir(conf.cvd)}">${conf.cvd}</td></tr>
+    <tr><td>${oiL}</td><td class="${clsDir(conf.oi)}">${conf.oi}</td></tr>
+    <tr><td>Vol. Filtresi</td><td class="${clsDir(vol)}">${vol}</td></tr>
+    <tr><td>Skor (Bull/Bear)</td><td>${conf.bull_score} / ${conf.bear_score}</td></tr>
+  </table>`;
+  const sg = $('gaSig');
+  if (sg){
+    if (conf.long){ sg.textContent = 'YUKARI'; sg.className = 'ga-sig up'; }
+    else if (conf.short){ sg.textContent = 'AŞAĞI'; sg.className = 'ga-sig dn'; }
+    else { sg.textContent = ''; sg.className = 'ga-sig'; }
+  }
+}
+
+function confAt(t){
+  const rows = (conf && conf.bars) || [];
+  if (!rows.length) return null;
+  const hour = t - (t % 3600000);
+  let hit = null;
+  for (let i = 0; i < rows.length; i++){
+    if (rows[i].t <= hour) hit = rows[i];
+    else break;
+  }
+  return hit;
+}
+
+async function loadConf(){
+  try{
+    const r = await fetch(BASE + `/api/desk/confluence?symbol=${symbol}`, {cache:'no-store'});
+    if (r.status === 401) return location.href = BASE + '/giris';
+    conf = await r.json();
+    drawConfPanel();
+    drawChart();
+  } catch(e){}
+}
+
+function drawOsc(){
+  const c = $('mvrvzChart'); if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (w < 40 || h < 30) return;
+  c.style.width = w + 'px'; c.style.height = h + 'px';
+  c.width = Math.floor(w * dpr); c.height = Math.floor(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle = '#0b0d12'; ctx.fillRect(0,0,w,h);
+  const rows = (mvrvz && mvrvz.bars) || [];
+  if (!rows.length){
+    ctx.fillStyle = '#636b7e'; ctx.font = '12px Inter,sans-serif';
+    ctx.fillText('MVRVZ yükleniyor…', 12, 22);
+    return;
+  }
+  const padL = 8, padR = 48, padT = 8, padB = 14;
+  const cw = w - padL - padR, ch = h - padT - padB;
+  const yOf = v => padT + (1 - v) * ch;
+  const xOf = i => padL + i * cw / Math.max(1, rows.length - 1);
+  ctx.fillStyle = 'rgba(239,68,68,.10)';
+  ctx.fillRect(padL, yOf(1), cw, yOf(0.70) - yOf(1));
+  ctx.fillStyle = 'rgba(34,197,94,.10)';
+  ctx.fillRect(padL, yOf(0.20), cw, yOf(0) - yOf(0.20));
+  const lines = [[1,'#ef444466'],[0.70,'#f59e0b88'],[0.50,'#ffffff22'],[0.20,'#22c55e88'],[0,'#22c55e66']];
+  ctx.font = '10px Inter,sans-serif';
+  lines.forEach(([v, col]) => {
+    const y = yOf(v);
+    ctx.strokeStyle = col; ctx.setLineDash(v === 0.50 ? [2,3] : (v === 0.70 || v === 0.20 ? [4,3] : []));
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#8b93a7';
+    ctx.fillText(v.toFixed(2), w - padR + 6, y + 3);
+  });
+  ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(234,179,8,.75)';
+  ctx.beginPath();
+  rows.forEach((b, i) => { const x = xOf(i), y = yOf(b.signal); i ? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  for (let i = 1; i < rows.length; i++){
+    const a = rows[i-1], b = rows[i];
+    const risk = b.risk;
+    ctx.strokeStyle = risk > 0.70 ? '#ef4444' : risk < 0.20 ? '#22c55e' : (risk > b.signal ? '#22d3ee' : '#f59e0b');
+    ctx.beginPath(); ctx.moveTo(xOf(i-1), yOf(a.risk)); ctx.lineTo(xOf(i), yOf(b.risk)); ctx.stroke();
+  }
+  rows.forEach((b, i) => {
+    if (!b.al && !b.sat) return;
+    const x = xOf(i);
+    ctx.beginPath();
+    if (b.al){
+      ctx.fillStyle = '#22c55e';
+      ctx.moveTo(x, h - 3); ctx.lineTo(x - 5, h - 12); ctx.lineTo(x + 5, h - 12);
+    } else {
+      ctx.fillStyle = '#ef4444';
+      ctx.moveTo(x, padT + 2); ctx.lineTo(x - 5, padT + 11); ctx.lineTo(x + 5, padT + 11);
+    }
+    ctx.closePath(); ctx.fill();
+  });
+  const last = rows[rows.length - 1];
+  const ly = yOf(last.risk);
+  ctx.fillStyle = last.risk > 0.70 ? '#ef4444' : last.risk < 0.20 ? '#22c55e' : '#3b82f6';
+  ctx.fillRect(w - padR + 2, ly - 8, padR - 4, 16);
+  ctx.fillStyle = '#fff'; ctx.font = '700 10px Inter,sans-serif';
+  ctx.fillText((+last.risk).toFixed(2), w - padR + 6, ly + 3);
+}
+
+function drawChart(){
+  const c = $('deskChart'); if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (w < 40 || h < 40) return;
+  c.style.width = w + 'px'; c.style.height = h + 'px';
+  c.width = Math.floor(w * dpr); c.height = Math.floor(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle = '#0f1117'; ctx.fillRect(0,0,w,h);
+  if (!bars.length){ ctx.fillStyle='#636b7e'; ctx.font='13px Inter,sans-serif'; ctx.fillText('grafik yükleniyor…',16,28); return; }
+  const padL = 8, padR = 62, padT = 12, volH = Math.floor(h * 0.16);
+  const ch = h - volH - 28 - padT;
+  const n = bars.length, last = bars[n-1].c;
+  let hi = Math.max(...bars.map(b => b.h));
+  let lo = Math.min(...bars.map(b => b.l));
+  bars.forEach(b => {
+    const cf = confAt(b.t);
+    if (!cf) return;
+    if (cf.ema_fast != null){ hi = Math.max(hi, cf.ema_fast); lo = Math.min(lo, cf.ema_fast); }
+    if (cf.ema_slow != null){ hi = Math.max(hi, cf.ema_slow); lo = Math.min(lo, cf.ema_slow); }
+  });
+  const span = Math.max(1e-8, hi - lo);
+  const yOf = v => padT + (1 - (v - lo) / span) * ch;
+  const bw = Math.max(2, (w - padL - padR) / n - 1.4);
+  const step = (w - padL - padR) / n;
+  ctx.strokeStyle = 'rgba(255,255,255,.05)';
+  for (let i = 0; i < 5; i++){ const y = padT + ch * i / 4; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(w-padR,y); ctx.stroke(); }
+  bars.forEach((b, i) => {
+    const cf = confAt(b.t);
+    if (!cf) return;
+    const x = padL + i * step;
+    if (cf.long){ ctx.fillStyle = 'rgba(34,197,94,.12)'; ctx.fillRect(x, padT, step, ch); }
+    else if (cf.short){ ctx.fillStyle = 'rgba(239,68,68,.12)'; ctx.fillRect(x, padT, step, ch); }
+  });
+  const vmax = Math.max(1, ...bars.map(b => b.v));
+  bars.forEach((b, i) => {
+    const x = padL + i * step;
+    const col = b.c >= b.o ? '#22c55e' : '#ef4444';
+    ctx.strokeStyle = col; ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(x+bw/2, yOf(b.h)); ctx.lineTo(x+bw/2, yOf(b.l)); ctx.stroke();
+    const y1 = yOf(Math.max(b.o,b.c)), y2 = yOf(Math.min(b.o,b.c));
+    ctx.fillRect(x, y1, bw, Math.max(1, y2-y1));
+    ctx.globalAlpha = .55; ctx.fillRect(x, h-10-(b.v/vmax)*volH, bw, (b.v/vmax)*volH); ctx.globalAlpha = 1;
+  });
+  function lineOf(key, col){
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+    let started = false;
+    bars.forEach((b, i) => {
+      const cf = confAt(b.t);
+      const v = cf && cf[key];
+      if (v == null){ started = false; return; }
+      const x = padL + i * step + bw / 2, y = yOf(v);
+      if (!started){ ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  lineOf('ema_fast', '#14b8a6');
+  lineOf('ema_slow', '#f59e0b');
+  bars.forEach((b, i) => {
+    const cf = confAt(b.t);
+    if (!cf) return;
+    const prevT = i ? bars[i-1].t : -1;
+    const hour = b.t - (b.t % 3600000);
+    const prevH = prevT >= 0 ? prevT - (prevT % 3600000) : -1;
+    if (hour === prevH) return;
+    const x = padL + i * step + bw / 2;
+    if (cf.long_new){
+      ctx.fillStyle = '#22c55e';
+      ctx.beginPath();
+      ctx.moveTo(x, yOf(b.l) + 12);
+      ctx.lineTo(x - 6, yOf(b.l) + 22);
+      ctx.lineTo(x + 6, yOf(b.l) + 22);
+      ctx.closePath(); ctx.fill();
+    }
+    if (cf.short_new){
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.moveTo(x, yOf(b.h) - 12);
+      ctx.lineTo(x - 6, yOf(b.h) - 22);
+      ctx.lineTo(x + 6, yOf(b.h) - 22);
+      ctx.closePath(); ctx.fill();
+    }
+  });
+  const y = yOf(last);
+  ctx.fillStyle = '#3b82f6';
+  ctx.fillRect(w-padR+2, y-9, padR-4, 18);
+  ctx.fillStyle = '#fff'; ctx.font = '700 11px Inter,sans-serif';
+  ctx.fillText(fmtPx(last), w-padR+8, y+4);
+}
+
+$('mDash').onclick = () => location.href = BASE + '/';
+$('mDesk').onclick = () => location.href = BASE + '/islemler';
+$('coins').onclick = e => {
+  const b = e.target.closest('[data-s]'); if (!b) return;
+  setSymbol(b.dataset.s);
+};
+$('qcoin').oninput = drawCoins;
+window.addEventListener('resize', () => { drawChart(); drawOsc(); });
+drawTabs(); loadCoins(); loadBars(); loadMvrvz(); loadConf();
+setInterval(loadBars, 10000);
+setInterval(loadCoins, 60000);
+setInterval(loadMvrvz, 60000);
+setInterval(loadConf, 20000);
 </script></body></html>"""
 
 LOGIN = r"""<!doctype html><html lang="tr"><head>

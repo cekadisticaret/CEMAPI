@@ -359,6 +359,33 @@ def pm_live_amount_range_str(system: str) -> str:
     return f"${low:.0f}–${high:.0f}"
 
 
+MIN_PROFIT_PCT_KEY = "coptc_min_profit_pct"
+MIN_PROFIT_PCT_DEFAULT = 60.0
+
+
+def load_min_profit_pct() -> float:
+    """Asgari beklenen kâr yüzdesi — tüm API kaynakları için ortak."""
+    try:
+        return max(0.0, min(900.0, float(
+            _read_settings().get(MIN_PROFIT_PCT_KEY, MIN_PROFIT_PCT_DEFAULT)
+        )))
+    except (TypeError, ValueError):
+        return MIN_PROFIT_PCT_DEFAULT
+
+
+def profit_pct_at(price: float) -> float:
+    """1 dolarlık ödemeye göre kâr yüzdesi: (1 - fiyat) / fiyat."""
+    p = float(price or 0)
+    if p <= 0:
+        return 0.0
+    return (1.0 - p) / p * 100.0
+
+
+def max_price_for_profit_pct(pct: float) -> float:
+    """Bu kâr yüzdesini tutturan en yüksek dolum fiyatı."""
+    return 1.0 / (1.0 + max(0.0, float(pct)) / 100.0)
+
+
 def pm_live_wr_amount(
     system: str,
     history: list,
@@ -467,15 +494,55 @@ def pm_get_balance() -> float:
         return -1.0
 
 
-def pm_conditional_shares(token_id: str) -> float:
-    """Zincirdeki conditional token adedi (-1 = okunamadı)."""
+def pm_chain_collateral() -> float:
+    """CLOB düşerse Polygon USDC.e / PUSD (funder). Anahtar basılmaz."""
+    wallet = (os.getenv("POLY_FUNDER") or "").strip()
+    if not wallet.startswith("0x") or len(wallet) != 42:
+        return -1.0
+    tokens = (
+        "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",  # USDC.e
+        "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",  # PUSD
+        "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # USDC native
+    )
+    rpc = (os.getenv("POLYGON_RPC") or "https://polygon-bor-rpc.publicnode.com").strip()
+    best = -1.0
+    for token in tokens:
+        try:
+            data = "0x70a08231" + wallet[2:].lower().zfill(64)
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                "params": [{"to": token, "data": data}, "latest"],
+            }).encode()
+            req = urllib.request.Request(
+                rpc, data=body, method="POST",
+                headers={"Content-Type": "application/json", "User-Agent": "CEMAPI"},
+            )
+            with urllib.request.urlopen(req, timeout=6) as r:
+                hexv = str((json.loads(r.read().decode()) or {}).get("result") or "0x0")
+            val = int(hexv, 16) / 1e6
+            if val > best:
+                best = val
+        except Exception:
+            continue
+    return best
+
+
+def pm_conditional_shares(token_id: str, *, refresh: bool = False) -> float:
+    """Zincirdeki conditional token adedi (-1 = okunamadı).
+
+    refresh=True: CLOB bakiyesini güncelle — yeni alınan share hemen 0 görünebilir.
+    """
     from decimal import Decimal, ROUND_DOWN
     try:
         from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
         client = pm_get_client()
-        bal = client.get_balance_allowance(
-            BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
-        )
+        params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+        if refresh:
+            try:
+                client.update_balance_allowance(params)
+            except Exception:
+                pass
+        bal = client.get_balance_allowance(params)
         raw = int(bal.get("balance", 0))
         return float(Decimal(str(raw / 1_000_000)).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
     except Exception:
@@ -566,6 +633,79 @@ def pm_find_market(symbol: str, et_hour: int, date_utc) -> dict | None:
         except Exception as e:
             print(f"[PM] Gamma hatası ({slug}): {e}", file=sys.stderr)
     return None
+
+
+def pm_buy_quote(token_id: str, amount_usd: float) -> dict | None:
+    """CLOB ask yürüyüşü — emir yok. to_win ve gerçek risk buradan gelir."""
+    if not token_id or amount_usd < 0.5:
+        return None
+    try:
+        from py_clob_client_v2 import OrderType
+        from decimal import Decimal, ROUND_DOWN
+        client = pm_get_client()
+        price = float(client.calculate_market_price(token_id, "BUY", amount_usd, OrderType.FAK))
+        price = max(0.02, min(0.98, round(price, 2)))
+        raw_sz = float(Decimal(str(amount_usd / price)).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+        size, price = pm_fit_buy(max(5.0, raw_sz), price)
+        spent = round(size * price, 2)
+        return {
+            "price": price,
+            "size": size,
+            "spent": spent,
+            "to_win": size,
+            "net": round(size - spent, 2),
+        }
+    except Exception as e:
+        print(f"[PM] buy quote: {e}", file=sys.stderr)
+        return None
+
+
+def pm_best_bid(token_id: str) -> float | None:
+    """Satış tahmini — en iyi bid, ask değil."""
+    if not token_id:
+        return None
+    try:
+        book = pm_get_client().get_order_book(token_id)
+        bids = book.get("bids") if isinstance(book, dict) else getattr(book, "bids", None)
+        px = []
+        for lvl in bids or []:
+            if isinstance(lvl, dict):
+                p = float(lvl.get("price") or 0)
+            elif isinstance(lvl, (list, tuple)) and lvl:
+                p = float(lvl[0])
+            else:
+                p = float(getattr(lvl, "price", 0) or 0)
+            if 0.01 < p < 0.99:
+                px.append(p)
+        return max(px) if px else None
+    except Exception:
+        return None
+
+
+def pm_best_asks(up_token: str, down_token: str) -> tuple[float | None, float | None]:
+    """Karttaki UP/DOWN ¢ — en iyi ask, gamma değil."""
+    def _ask(tid: str) -> float | None:
+        if not tid:
+            return None
+        try:
+            book = pm_get_client().get_order_book(tid)
+            asks = book.get("asks") or []
+            if not asks:
+                return None
+            px = []
+            for lvl in asks:
+                if isinstance(lvl, dict):
+                    p = float(lvl.get("price") or 0)
+                elif isinstance(lvl, (list, tuple)) and lvl:
+                    p = float(lvl[0])
+                else:
+                    continue
+                if 0.01 < p < 0.99:
+                    px.append(p)
+            return min(px) if px else None
+        except Exception:
+            return None
+    return _ask(up_token), _ask(down_token)
 
 
 def pm_fit_buy(size: float, price: float, min_shares: float = PM_MIN_SHARES) -> tuple[float, float]:
@@ -670,9 +810,11 @@ def pm_place_order(
     max_price: float | None = None,
     min_price: float | None = None,
     max_spend: float | None = None,
+    min_profit_pct: float | None = None,
 ) -> dict | None:
     """max_price / min_price: gerçek dolum fiyatı bandı. max_spend: harcanacak
-    üst sınır — borsanın 5 share minimumu bahsi şişirdiğinde emri iptal eder."""
+    üst sınır — borsanın 5 share minimumu bahsi şişirdiğinde emri iptal eder.
+    min_profit_pct: kazanınca elde edilecek kârın maliyete oranı alt sınırı."""
     global _PM_LAST_ORDER_ERROR
     last_err: str | None = None
     shares_before = pm_conditional_shares(token_id)
@@ -715,6 +857,16 @@ def pm_place_order(
                 _PM_LAST_ORDER_ERROR = f"dolum fiyatı {price:.2f} < taban {min_price:.2f}"
                 print(f"[{label}] {_PM_LAST_ORDER_ERROR} — emir gönderilmedi", file=sys.stderr)
                 return None
+            # Kâr, ödenen fiyata göre: 0.80'den alınan 1.00'a gidiyorsa %25.
+            if min_profit_pct is not None and min_profit_pct > 0:
+                gain = profit_pct_at(price)
+                if gain + 1e-9 < float(min_profit_pct):
+                    _PM_LAST_ORDER_ERROR = (
+                        f"beklenen kâr %{gain:.1f} < asgari %{float(min_profit_pct):.0f} "
+                        f"(dolum {price:.2f}, tavan {max_price_for_profit_pct(min_profit_pct):.3f})"
+                    )
+                    print(f"[{label}] {_PM_LAST_ORDER_ERROR} — emir gönderilmedi", file=sys.stderr)
+                    return None
             if max_spend is not None and spent > max_spend:
                 _PM_LAST_ORDER_ERROR = (
                     f"{size:g} share × {price:.2f} = ${spent:.2f} > bütçe ${max_spend:.2f} "
@@ -772,31 +924,123 @@ def pm_place_order(
     return None
 
 
-def pm_sell_position(
-    token_id: str, size: float | None = None, *,
-    tick_size: str | None = None, label: str = "PM", attempts: int = 3,
-) -> dict | None:
-    """Elde tutulan share'leri piyasa fiyatından sat (manuel kapatma)."""
+def _clob_available_shares(err: str) -> float | None:
+    """'not enough balance' metninden serbest share miktarını çıkar."""
+    import re
+
+    m = re.search(r"balance:\s*(\d+)", err or "", re.I)
+    if not m:
+        return None
+    bal = int(m.group(1)) / 1_000_000
+    m2 = re.search(r"matched orders:\s*(\d+)", err or "", re.I)
+    locked = int(m2.group(1)) / 1_000_000 if m2 else 0.0
+    return max(0.0, bal - locked)
+
+
+def _bid_sweep_limit(bids, sell_size: float, tick: float) -> tuple[float, float] | None:
+    """FAK limiti: yalnızca en iyi kademe değil, boyutu karşılayan kademeler."""
     from decimal import Decimal, ROUND_DOWN
 
-    shares = pm_conditional_shares(token_id)
-    if shares < 0 and size is None:
+    levels = []
+    for b in bids or []:
+        try:
+            px = float(b["price"] if isinstance(b, dict) else b.price)
+            sz = float(
+                (b.get("size") if isinstance(b, dict) else getattr(b, "size", 0))
+                or (b.get("amount") if isinstance(b, dict) else 0)
+                or 0
+            )
+        except (TypeError, ValueError, KeyError, AttributeError):
+            continue
+        if px > 0 and sz > 0:
+            levels.append((px, sz))
+    if not levels:
+        return None
+    levels.sort(key=lambda x: x[0], reverse=True)
+    need = sell_size
+    taken = 0.0
+    vwap_num = 0.0
+    worst = levels[0][0]
+    for px, sz in levels:
+        take = min(sz, need - taken)
+        vwap_num += take * px
+        taken += take
+        worst = px
+        if taken >= need - 1e-9:
+            break
+    if taken < 0.01:
+        return None
+    # Bir tick alta in: o kademenin tamamı FAK'a girsin
+    raw = worst - tick if taken + 1e-9 < need else worst
+    price = float(Decimal(str(raw)).quantize(Decimal(str(tick)), rounding=ROUND_DOWN))
+    price = max(tick, min(1.0 - tick, price))
+    vwap = vwap_num / taken if taken else price
+    return price, vwap
+
+
+def _floor_shares(n: float) -> float:
+    from decimal import Decimal, ROUND_DOWN
+
+    return float(Decimal(str(max(0.0, n))).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+
+
+def _poll_shares(token_id: str, before: float, *, waits: int = 5, pause: float = 0.7) -> float:
+    """FAK dolduktan sonra bakiye gecikebiliyor — birkaç kez oku."""
+    last = before
+    for _ in range(max(1, waits)):
+        time.sleep(pause)
+        now = pm_conditional_shares(token_id)
+        if now >= 0:
+            last = now
+            if before >= 0 and now < before - 0.009:
+                time.sleep(0.4)
+                later = pm_conditional_shares(token_id)
+                return later if later >= 0 else now
+    return last
+
+
+def pm_sell_position(
+    token_id: str, size: float | None = None, *,
+    tick_size: str | None = None, label: str = "PM", attempts: int = 5,
+) -> dict | None:
+    """Elde tutulan share'leri piyasa fiyatından sat (manuel kapatma).
+
+    İlk kademe yetmezse kalanı sonraki turda satar; kısmi dolumda aynı
+    boyutu tekrar göndermez (CLOB 'not enough balance / matched orders').
+    """
+    from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions
+    from py_clob_client_v2.order_builder.constants import SELL
+    from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
+
+    start = pm_conditional_shares(token_id)
+    if start < 0 and size is None:
         print(f"[{label}] share bakiyesi okunamadı", file=sys.stderr)
         return None
-    sell_size = float(
-        Decimal(str(min(size, shares) if (size and shares >= 0) else (size or shares)))
-        .quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-    )
-    if sell_size < 0.01:
+    want = _floor_shares(min(size, start) if (size and start >= 0) else (size or start))
+    if want < 0.01:
         return None
 
+    sold_total = 0.0
+    proceeds_total = 0.0
+    last_price = 0.0
+    last_oid = ""
     last_err = None
-    price = 0.0
+    remaining = start if start >= 0 else want
+
     for attempt in range(1, max(1, attempts) + 1):
+        held = pm_conditional_shares(token_id)
+        if held >= 0:
+            remaining = held
+        if remaining >= 0 and remaining < 0.5:
+            break
+        cap = remaining if remaining >= 0 else want
+        sell_size = _floor_shares(min(cap, want - sold_total if size else cap))
+        if sell_size < 0.01:
+            break
+
+        price = 0.0
+        vwap = 0.0
         try:
-            from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions
-            from py_clob_client_v2.order_builder.constants import SELL
-            from py_clob_client_v2.clob_types import BalanceAllowanceParams, AssetType
             client = pm_get_client()
             try:
                 client.update_balance_allowance(
@@ -806,14 +1050,15 @@ def pm_sell_position(
                 pass
             book = client.get_order_book(token_id)
             tick = float(tick_size or book.get("tick_size") or 0.01)
-            bids = book.get("bids") or []
-            if bids:
-                raw = max(float(b["price"]) for b in bids)
+            sweep = _bid_sweep_limit(book.get("bids") or [], sell_size, tick)
+            if sweep:
+                price, vwap = sweep
             else:
                 try:
-                    raw = float(
+                    price = float(
                         client.calculate_market_price(token_id, "SELL", sell_size, OrderType.FAK)
                     )
+                    vwap = price
                 except Exception as calc_err:
                     last_err = str(calc_err)
                     if "no match" in last_err.lower():
@@ -823,50 +1068,63 @@ def pm_sell_position(
                         )
                         break
                     raise
-            # aşağı yuvarla — dolma şansı artsın; tick piyasadan (çoğu saatlik 0.001)
-            price = float(Decimal(str(raw)).quantize(Decimal(str(tick)), rounding=ROUND_DOWN))
-            price = max(tick, min(1.0 - tick, price))
-            proceeds = round(sell_size * price, 2)
+                price = max(tick, min(1.0 - tick, _floor_shares(price) if tick >= 0.01 else price))
             if PM_DRY_RUN:
+                proceeds = round(sell_size * (vwap or price), 2)
                 print(f"[{label} DRY RUN] SELL {sell_size} @ {price:.2f} (~${proceeds:.2f})")
                 return {"order_id": "DRY_RUN", "size": sell_size, "price": price, "proceeds": proceeds}
             args = OrderArgs(token_id=token_id, price=price, size=sell_size, side=SELL)
             signed = client.create_order(args, PartialCreateOrderOptions())
             resp = client.post_order(signed, order_type=OrderType.FAK)
-            if resp and resp.get("success"):
-                after = pm_conditional_shares(token_id)
-                if after >= 0 and shares >= 0:
-                    sold = round(shares - after, 2)
-                    if sold < 0.01:
-                        last_err = "FAK success ama share duruyor (kısmi/boş dolum)"
-                        print(f"[{label}] SELL — {last_err} (önce {shares:g} sonra {after:g})", file=sys.stderr)
-                        continue
-                    return {
-                        "order_id": resp.get("orderID") or resp.get("id", ""),
-                        "size": sold, "price": price,
-                        "proceeds": round(sold * price, 2),
-                        "remaining": after,
-                    }
-                return {
-                    "order_id": resp.get("orderID") or resp.get("id", ""),
-                    "size": sell_size, "price": price, "proceeds": proceeds,
-                }
-            last_err = str(resp)
+            if not (resp and resp.get("success")):
+                last_err = str(resp)
+                raise RuntimeError(last_err)
+            last_oid = resp.get("orderID") or resp.get("id") or last_oid
+            last_price = price
+            after = _poll_shares(token_id, remaining if remaining >= 0 else start)
+            sold = round((remaining if remaining >= 0 else 0) - after, 2) if after >= 0 and remaining >= 0 else 0.0
+            if sold >= 0.01:
+                sold_total = round(sold_total + sold, 2)
+                proceeds_total = round(proceeds_total + sold * (vwap or price), 2)
+                remaining = after
+                print(
+                    f"[{label}] SELL {sold:g} @ ~{vwap or price:.3f} "
+                    f"(kalan {after:g})",
+                    file=sys.stderr,
+                )
+                if after < 0.5 or sold_total + 0.009 >= want:
+                    break
+                continue
+            last_err = "FAK success ama share duruyor (kısmi/boş dolum)"
+            print(
+                f"[{label}] SELL — {last_err} (önce {remaining:g} sonra {after:g})",
+                file=sys.stderr,
+            )
         except Exception as e:
             last_err = str(e)
             low = last_err.lower()
             if "unauthorized" in low or "invalid api" in low or "api key" in low:
                 pm_invalidate_client()
+            avail = _clob_available_shares(last_err)
+            if avail is not None:
+                print(
+                    f"[{label}] SELL kilitli bakiye — serbest {avail:g} share, bekleniyor",
+                    file=sys.stderr,
+                )
+                time.sleep(1.6)
+                continue
         print(f"[{label}] SELL başarısız ({attempt}/{attempts}): {last_err}", file=sys.stderr)
-
-        after = pm_conditional_shares(token_id)
-        if after >= 0 and shares >= 0 and round(shares - after, 2) >= 0.5:
-            sold = round(shares - after, 2)
-            print(f"[{label}] emir yanıt vermedi ama {sold} share gitmiş — recover", file=sys.stderr)
-            return {"order_id": f"recovered:{token_id[:18]}", "size": sold,
-                    "price": price, "proceeds": round(sold * price, 2), "recovered": True}
         if attempt < attempts:
-            time.sleep(3)
+            time.sleep(1.5)
+
+    if sold_total >= 0.01:
+        return {
+            "order_id": last_oid or f"recovered:{token_id[:18]}",
+            "size": sold_total,
+            "price": last_price,
+            "proceeds": proceeds_total,
+            "remaining": remaining if remaining >= 0 else 0.0,
+        }
 
     _globals = globals()
     _globals["_PM_LAST_ORDER_ERROR"] = pm_clob_error_tr(last_err or "sell failed")
@@ -1205,12 +1463,19 @@ def pm_updown_find_market(ts: int, symbol: str, period_min: int = 5) -> dict | N
         m = markets[0]
         raw_op = m.get("outcomePrices")
         op = json.loads(raw_op) if isinstance(raw_op, str) else (raw_op or [])
+        raw_tk = m.get("clobTokenIds", [])
+        tokens = json.loads(raw_tk) if isinstance(raw_tk, str) else (raw_tk or [])
         return {
             "slug": slug,
             "title": event.get("title", ""),
             "closed": event.get("closed", False),
+            "active": event.get("active", True),
             "up_price": float(op[0]) if len(op) >= 2 else 0.5,
             "down_price": float(op[1]) if len(op) >= 2 else 0.5,
+            "up_token": tokens[0] if len(tokens) >= 2 else "",
+            "down_token": tokens[1] if len(tokens) >= 2 else "",
+            "tick_size": str(m.get("orderPriceMinTickSize", "0.01")),
+            "neg_risk": bool(m.get("negRisk", False)),
         }
     except Exception as e:
         print(f"[PM] 5m gamma hatası ({slug}): {e}", file=sys.stderr)
@@ -1706,6 +1971,31 @@ def pm_recent_sell(token_id: str) -> dict | None:
 
 def _pm_position_token_id(p: dict) -> str:
     return str(p.get("asset") or p.get("assetId") or p.get("tokenId") or "").strip()
+
+
+def pm_live_position_by_slug(slug: str) -> dict | None:
+    """Açık (redeem değil) PM pozisyonu — slug ile token/size."""
+    wallet = _pm_funder()
+    want = str(slug or "").strip()
+    if not wallet or not want:
+        return None
+    try:
+        rows = _pm_fetch_all_positions(wallet)
+    except Exception:
+        return None
+    for p in rows:
+        if bool(p.get("redeemable")):
+            continue
+        got = str(p.get("eventSlug") or p.get("slug") or "")
+        if got != want and not got.endswith(want) and want not in got:
+            title = str(p.get("title") or "")
+            if want not in title and want not in str(p.get("conditionId") or ""):
+                continue
+        tid = _pm_position_token_id(p)
+        size = float(p.get("size") or p.get("currentQuantity") or 0)
+        if tid and size >= 0.5:
+            return {"token_id": tid, "size": size, "slug": got or want}
+    return None
 
 
 def pm_pending_cash_snapshot(*, open_token_ids: set[str] | None = None) -> dict:
