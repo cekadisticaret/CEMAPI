@@ -1342,6 +1342,48 @@ def algo_overview() -> dict:
     return algo_paper.overview()
 
 
+def algo_public_list() -> dict:
+    """Algoritma İşlemler listesi — kartlarla aynı alanlar."""
+    d = algo_overview()
+    rows = []
+    for a in d.get("algos") or []:
+        rows.append({
+            "id": a.get("id"),
+            "code": a.get("code"),
+            "title": a.get("title"),
+            "active": bool(a.get("active")),
+            "auto": bool(a.get("auto")),
+            "equity": a.get("equity"),
+            "net_pnl": a.get("net_pnl"),
+            "unreal": a.get("unreal"),
+            "fees": a.get("fees"),
+            "trades": a.get("trades"),
+            "wins": a.get("wins"),
+            "win_pct": a.get("win_pct"),
+            "open_n": a.get("open_n"),
+            "last_signal": a.get("last_signal") or "",
+            "positions": [
+                {
+                    "symbol": p.get("symbol"),
+                    "base": p.get("base"),
+                    "side": p.get("side"),
+                    "net": p.get("net"),
+                }
+                for p in (a.get("positions") or [])
+            ],
+        })
+    rows.sort(key=lambda x: (-float(x.get("equity") or 0), x.get("code") or ""))
+    return {
+        "ok": True,
+        "subtitle": d.get("subtitle") or "",
+        "net_pnl": d.get("net_pnl"),
+        "fees": d.get("fees"),
+        "open_n": d.get("open_n"),
+        "last_scan": d.get("last_scan") or "",
+        "algos": rows,
+    }
+
+
 def algo_detail(aid: str) -> dict | None:
     import algo_paper
     algo_paper.ensure_started()

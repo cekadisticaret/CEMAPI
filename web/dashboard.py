@@ -28,6 +28,7 @@ app = Flask(__name__)
 # yoksa Flask "no secret key" diye oturumu tamamen reddediyor.
 app.secret_key = os.getenv("COPTC_SECRET") or secrets.token_hex(16)
 PASSWORD = (os.getenv("COPTC_PASSWORD") or "").strip()
+ALG_API_TOKEN = (os.getenv("ALG_API_TOKEN") or "").strip()
 PORT = int(os.getenv("COPTC_PORT") or 5060)
 APP_NAME = "CemAPI Live Control"
 URL_PREFIX = (os.getenv("COPTC_URL_PREFIX") or "").strip().rstrip("/")
@@ -111,6 +112,25 @@ def guard(fn):
             return redirect(_url("/giris"))
         return fn(*a, **kw)
     return inner
+
+
+def _algo_token() -> str:
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (
+        (request.headers.get("X-Algo-Token") or "").strip()
+        or (request.args.get("token") or "").strip()
+    )
+
+
+def _algo_public_ok() -> bool:
+    if not ALG_API_TOKEN:
+        return False
+    got = _algo_token()
+    if not got or len(got) != len(ALG_API_TOKEN):
+        return False
+    return secrets.compare_digest(got, ALG_API_TOKEN)
 
 
 # ── sayfa şablonları → ui_templates.py ───────────────────────────
@@ -471,6 +491,25 @@ def api_desk_close():
     d = request.get_json(silent=True) or {}
     res, status = api.desk_close(str(d.get("id") or ""))
     return jsonify(res), status
+
+
+@app.route("/api/v1/algos", methods=["GET", "OPTIONS"])
+def api_v1_algos():
+    """Liste sayfasıyla aynı veri — oturum yok, ALG_API_TOKEN gerekir."""
+    if request.method == "OPTIONS":
+        resp = app.make_response(("", 204))
+    elif not ALG_API_TOKEN:
+        resp = jsonify({"error": "ALG_API_TOKEN tanımsız"})
+        resp.status_code = 503
+    elif not _algo_public_ok():
+        resp = jsonify({"error": "yetkisiz"})
+        resp.status_code = 401
+    else:
+        resp = jsonify(api.algo_public_list())
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Authorization, X-Algo-Token"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    return resp
 
 
 @app.route("/api/algo/overview")
