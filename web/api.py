@@ -1342,6 +1342,28 @@ def algo_overview() -> dict:
     return algo_paper.overview()
 
 
+def algo_live_overview() -> dict:
+    import algo_paper
+    import algo_live
+    algo_paper.ensure_started()
+    return algo_live.overview()
+
+
+def algo_live_toggle() -> dict:
+    import algo_live
+    return algo_live.toggle()
+
+
+def algo_live_close(pos_id: str) -> tuple[dict, int]:
+    import algo_live
+    return algo_live.close_pos(str(pos_id or "").strip())
+
+
+def algo_live_wallet() -> dict:
+    import algo_live
+    return algo_live.wallet(force=True)
+
+
 def algo_public_list() -> dict:
     """Algoritma İşlemler listesi — kartlarla aynı alanlar."""
     d = algo_overview()
@@ -1381,6 +1403,80 @@ def algo_public_list() -> dict:
         "open_n": d.get("open_n"),
         "last_scan": d.get("last_scan") or "",
         "algos": rows,
+    }
+
+
+def algo_public_live() -> dict:
+    """LIVE ekranı — oturumsuz, token’lı."""
+    d = algo_live_overview()
+    poss = []
+    for p in d.get("positions") or []:
+        poss.append({
+            "id": p.get("id"),
+            "symbol": p.get("symbol"),
+            "base": p.get("base"),
+            "side": p.get("side"),
+            "entry": p.get("entry"),
+            "mark": p.get("mark"),
+            "qty": p.get("qty"),
+            "net": p.get("net"),
+            "gross": p.get("gross"),
+            "pct": p.get("pct"),
+            "sl": p.get("sl"),
+            "tp": p.get("tp"),
+            "tp1": p.get("tp1"),
+            "liq": p.get("liq"),
+            "atr": p.get("atr"),
+            "atrp": p.get("atrp"),
+            "opened": p.get("opened"),
+            "mins": p.get("mins"),
+            "trail_on": bool(p.get("trail_on")),
+            "tp1_done": bool(p.get("tp1_done")),
+            "lev": p.get("lev") or 10,
+        })
+    hist = []
+    for h in d.get("history") or []:
+        hist.append({
+            "id": h.get("id"),
+            "symbol": h.get("symbol"),
+            "base": h.get("base"),
+            "side": h.get("side"),
+            "entry": h.get("entry"),
+            "exit": h.get("exit"),
+            "net": h.get("net"),
+            "reason": h.get("reason"),
+            "opened": h.get("opened"),
+            "closed": h.get("closed") or h.get("t"),
+            "mins": h.get("mins"),
+            "commission": h.get("commission"),
+        })
+    return {
+        "ok": True,
+        "id": d.get("id"),
+        "code": d.get("code"),
+        "title": d.get("title"),
+        "live": True,
+        "active": bool(d.get("active")),
+        "connected": bool(d.get("connected")),
+        "error": d.get("error") or "",
+        "wallet": d.get("wallet"),
+        "available": d.get("available"),
+        "wallet_unreal": d.get("wallet_unreal"),
+        "equity": d.get("equity"),
+        "net_pnl": d.get("net_pnl"),
+        "unreal": d.get("unreal"),
+        "realized": d.get("realized"),
+        "fees": d.get("fees"),
+        "open_n": d.get("open_n"),
+        "trades": d.get("trades"),
+        "wins": d.get("wins"),
+        "win_pct": d.get("win_pct"),
+        "margin": d.get("margin"),
+        "lev": d.get("lev"),
+        "last_signal": d.get("last_signal") or "",
+        "last_scan": d.get("last_scan") or "",
+        "positions": poss,
+        "history": hist,
     }
 
 

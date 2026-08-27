@@ -27,6 +27,11 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Algoritma İşlemler
       </a>
+      <a class="nav-item{% if nav_on=='live' %} on{% endif %}" href="{{ base }}/live">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
+        LIVE
+        <span class="nav-live-dot"></span>
+      </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
         Grafik Analiz
@@ -558,6 +563,11 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Algoritma İşlemler
       </a>
+      <a class="nav-item{% if nav_on=='live' %} on{% endif %}" href="{{ base }}/live">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
+        LIVE
+        <span class="nav-live-dot"></span>
+      </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
         Grafik Analiz
@@ -984,6 +994,11 @@ TRADES = r"""<!doctype html><html lang="tr"><head>
       <a class="nav-item" href="{{ base }}/algoritma-islemler">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Algoritma İşlemler
+      </a>
+      <a class="nav-item{% if nav_on=='live' %} on{% endif %}" href="{{ base }}/live">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
+        LIVE
+        <span class="nav-live-dot"></span>
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -1466,6 +1481,11 @@ ANALIZ = r"""<!doctype html><html lang="tr"><head>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Algoritma İşlemler
       </a>
+      <a class="nav-item{% if nav_on=='live' %} on{% endif %}" href="{{ base }}/live">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
+        LIVE
+        <span class="nav-live-dot"></span>
+      </a>
       <a class="nav-item on" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
         Grafik Analiz
@@ -1858,9 +1878,14 @@ _ALG_NAV = r"""      <a class="nav-item" href="{{ base }}/">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-6 6"/></svg>
         İşlemler
       </a>
-      <a class="nav-item on" href="{{ base }}/algoritma-islemler">
+      <a class="nav-item{% if nav_on!='live' %} on{% endif %}" href="{{ base }}/algoritma-islemler">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Algoritma İşlemler
+      </a>
+      <a class="nav-item{% if nav_on=='live' %} on{% endif %}" href="{{ base }}/live">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
+        LIVE
+        <span class="nav-live-dot"></span>
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -2017,7 +2042,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
     </div>
     <nav class="nav">""" + _ALG_NAV + r"""
     </nav>
-    <div class="sidebar-foot"><b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.</div>
+    <div class="sidebar-foot">{% if live_mode %}<b>Gerçek Binance</b>$30 × 10x · Squeeze Momentum — sanal defter ayrı.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
   </aside>
   <div class="main alg-page">
     <header class="topbar">
@@ -2026,6 +2051,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
         <div class="topbar-sub" id="sub">—</div>
       </div>
       <div class="topbar-actions">
+        {% if live_mode %}<div class="live-bal" id="liveBal"><em>BINANCE USDT</em><b id="liveUsdt">—</b><span id="liveAvail" class="mut"></span></div>{% endif %}
         <span class="alg-topstat" id="topstat">—</span>
         <a class="btn" href="{{ base }}/algoritma-islemler">Liste</a>
         <button class="btn" id="btog">—</button>
@@ -2043,6 +2069,8 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
 <script>
 const BASE = {{ base|tojson }};
 const AID = {{ aid|tojson }};
+const LIVE = {{ live_mode|tojson }};
+const API = LIVE ? (BASE + '/api/algo/live') : (BASE + '/api/algo/' + encodeURIComponent(AID));
 const $ = id => document.getElementById(id);
 const signed = n => {
   const v = Number(n||0);
@@ -2075,7 +2103,7 @@ function posCard(p){
     <div class="ap-mini">Brüt ${signed(p.gross)} · Komisyon −$${Number(p.commission).toFixed(2)} · Funding ${signed(p.funding||0)} · Net ${signed(p.net)} · marj ${p.pct>=0?'+':''}${Number(p.pct).toFixed(1)}%</div>
     <div class="ap-mini">Kar al $${Number(p.tp).toPrecision(6)} (${signed(p.tp_usd)}) · Zarar durdur $${Number(p.sl).toPrecision(6)} (${signed(p.sl_usd)}) · Liq $${Number(p.liq||0).toPrecision(6)}</div>
     <div class="ap-mini">ATR ${p.atr?Number(p.atr).toPrecision(5):'—'} · ATRP %${p.atrp??'—'} · SL 1.5×ATR · ${p.trail_on?'trail açık 2.5×':'trail 1R sonra'} · ${p.tp1_done?'TP1 alındı · TP2':'TP1 1.5R / TP2 2.5R'}</div>
-    <div class="ap-mini">STR: ${p.lev||10}x · ${p.side.toLowerCase()} · taker VIP0 · mark · ${p.fill||'bid/ask'}</div>
+    <div class="ap-mini">STR: ${p.lev||10}x · ${p.side.toLowerCase()} · ${LIVE?'Binance Futures gerçek':'taker VIP0 · mark'} · ${p.fill||'bid/ask'}</div>
   </div>`;
 }
 function holdTxt(m){
@@ -2097,13 +2125,21 @@ function row(h){
   </div>`;
 }
 async function load(){
-  const r = await fetch(BASE + '/api/algo/' + encodeURIComponent(AID), {cache:'no-store'});
+  const r = await fetch(API, {cache:'no-store'});
   if (r.status === 401) return location.href = BASE + '/giris';
   if (!r.ok) { $('ttl').textContent = 'Bulunamadı'; return; }
   const a = await r.json();
-  $('ttl').textContent = a.code;
-  $('sub').textContent = `${a.title} — Win % ${a.win_pct} — ${a.trades} işlem — $100x10 — max: 6`;
-  $('topstat').innerHTML = `Bakiye: ${a.equity.toFixed(2)} | Net PNL: ${signed(a.net_pnl)} | Anlık Net: ${signed(a.unreal)} | Kom: −$${a.fees.toFixed(2)}`;
+  $('ttl').textContent = LIVE ? 'LIVE' : a.code;
+  const sz = LIVE ? '$30×10x' : '$100x10';
+  $('sub').textContent = `${a.title} — Win % ${a.win_pct} — ${a.trades} işlem — ${sz} — max: 6${a.error?' — '+a.error:''}`;
+  if (LIVE && $('liveUsdt')) {
+    $('liveUsdt').textContent = '$' + Number(a.wallet||0).toFixed(2);
+    $('liveAvail').textContent = 'serbest $' + Number(a.available||0).toFixed(2);
+    $('liveBal').classList.toggle('off', !a.connected);
+  }
+  $('topstat').innerHTML = LIVE
+    ? `Cüzdan: ${Number(a.wallet||0).toFixed(2)} | Anlık: ${signed(a.unreal)} | ${a.connected?'bağlı':'kopuk'}`
+    : `Bakiye: ${a.equity.toFixed(2)} | Net PNL: ${signed(a.net_pnl)} | Anlık Net: ${signed(a.unreal)} | Kom: −$${a.fees.toFixed(2)}`;
   $('btog').textContent = a.active ? 'Durdur' : 'Başlat';
   const opens = a.positions||[];
   $('opens').innerHTML = opens.map(posCard).join('') || '<div class="mut">Açık pozisyon yok — tarama 15m sinyal bekliyor.</div>';
@@ -2114,7 +2150,7 @@ async function load(){
     btn.onclick = async ev => {
       ev.preventDefault();
       btn.disabled = true;
-      await fetch(BASE + '/api/algo/' + encodeURIComponent(AID) + '/close', {
+      await fetch(API + '/close', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({id: btn.dataset.id})
       });
@@ -2123,7 +2159,7 @@ async function load(){
   });
 }
 $('btog').onclick = async () => {
-  await fetch(BASE + '/api/algo/' + encodeURIComponent(AID) + '/toggle', {method:'POST'});
+  await fetch(API + '/toggle', {method:'POST'});
   load();
 };
 load();

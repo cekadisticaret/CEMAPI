@@ -92,6 +92,8 @@ def _render(name: str, **ctx):
     ctx.setdefault("app_name", APP_NAME)
     ctx.setdefault("static_ver", static_ver())
     ctx.setdefault("base", URL_PREFIX)
+    ctx.setdefault("nav_on", "")
+    ctx.setdefault("live_mode", False)
     return render_template_string(_tpl(name), **ctx)
 
 
@@ -260,6 +262,19 @@ def algo_list_page():
 @guard
 def algo_detail_page(aid: str):
     return _render("ALGO_ONE", book=api.active_book(), aid=aid)
+
+
+@app.route("/live")
+@guard
+def live_squeeze_page():
+    """Squeeze Momentum detayının kopyası — aynı defter, motor değişmez."""
+    return _render(
+        "ALGO_ONE",
+        book=api.active_book(),
+        aid="squeeze_momentum",
+        nav_on="live",
+        live_mode=True,
+    )
 
 
 @app.route("/indir")
@@ -512,10 +527,55 @@ def api_v1_algos():
     return resp
 
 
+@app.route("/api/v1/live", methods=["GET", "OPTIONS"])
+def api_v1_live():
+    """LIVE ekranı — oturum yok, ALG_API_TOKEN gerekir."""
+    if request.method == "OPTIONS":
+        resp = app.make_response(("", 204))
+    elif not ALG_API_TOKEN:
+        resp = jsonify({"error": "ALG_API_TOKEN tanımsız"})
+        resp.status_code = 503
+    elif not _algo_public_ok():
+        resp = jsonify({"error": "yetkisiz"})
+        resp.status_code = 401
+    else:
+        resp = jsonify(api.algo_public_live())
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Authorization, X-Algo-Token"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    return resp
+
+
 @app.route("/api/algo/overview")
 @guard
 def api_algo_overview():
     return jsonify(api.algo_overview())
+
+
+@app.route("/api/algo/live")
+@guard
+def api_algo_live():
+    return jsonify(api.algo_live_overview())
+
+
+@app.route("/api/algo/live/wallet")
+@guard
+def api_algo_live_wallet():
+    return jsonify(api.algo_live_wallet())
+
+
+@app.route("/api/algo/live/toggle", methods=["POST"])
+@guard
+def api_algo_live_toggle():
+    return jsonify(api.algo_live_toggle())
+
+
+@app.route("/api/algo/live/close", methods=["POST"])
+@guard
+def api_algo_live_close():
+    d = request.get_json(silent=True) or {}
+    res, status = api.algo_live_close(str(d.get("id") or ""))
+    return jsonify(res), status
 
 
 @app.route("/api/algo/<aid>")

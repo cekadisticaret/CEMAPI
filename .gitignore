@@ -18,6 +18,8 @@ poly/withdraw_log.jsonl
 poly/coptc_control.json
 poly/algo_paper_state.json
 poly/algo_paper_state.json.bak
+poly/algo_live_state.json
+poly/algo_live_state.json.bak
 poly/pm_system_control.json
 ios/.signing/
 ios/build/

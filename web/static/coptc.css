@@ -43,6 +43,11 @@ button,input,select{font:inherit;color:inherit}
 .nav-item:hover{background:var(--card2);color:var(--tx)}
 .nav-item.on{background:var(--lime);color:var(--lime-ink)}
 .nav-item svg{width:18px;height:18px;flex-shrink:0}
+.nav-live-dot{
+  width:7px;height:7px;border-radius:50%;background:#4ade80;
+  box-shadow:0 0 8px rgba(74,222,128,.7);margin-left:auto;flex-shrink:0;
+}
+.nav-item.on .nav-live-dot{background:var(--lime-ink);box-shadow:none}
 .sidebar-foot{
   margin-top:auto;padding:16px;border-radius:var(--radius-sm);
   background:var(--card);border:0;box-shadow:var(--shadow);
@@ -597,6 +602,15 @@ tr:hover td{background:#1c1c21}
 
 .alg-page{min-height:100vh;background:var(--bg);color:var(--tx)}
 .alg-page .topbar{background:var(--bg);border-bottom-color:var(--line)}
+.live-bal{
+  display:flex;flex-direction:column;align-items:flex-end;gap:1px;
+  padding:7px 14px;border-radius:12px;background:#16301f;
+  border:1px solid rgba(74,222,128,.35);min-width:132px;margin-right:4px;
+}
+.live-bal em{font-size:9px;letter-spacing:.08em;color:#4ade80;font-style:normal;font-weight:800}
+.live-bal b{font-size:17px;color:#fff;font-variant-numeric:tabular-nums;line-height:1.15}
+.live-bal.off{background:#2a1818;border-color:rgba(248,113,113,.4)}
+.live-bal.off em{color:#f87171}
 .alg-topstat{font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums}
 .alg-topstat .up{color:var(--grn);font-weight:700}
 .alg-topstat .dn{color:var(--red);font-weight:700}

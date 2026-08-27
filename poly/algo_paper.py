@@ -53,7 +53,11 @@ KLINE_N = 90
 SCAN_SEC = 60
 
 _SKIP_FILES = {"hmm_regime_detector (1).py"}
-_SKIP_CLASSES = {"GridLevel", "ArbitrageOpportunity", "ChandelierLevels"}
+_SKIP_CLASSES = {
+    "GridLevel", "ArbitrageOpportunity", "ChandelierLevels",
+    "AlgorithmMeta", "AlgorithmLoader", "SignalExtractor",
+    "ConsensusEngine", "RiskManager",
+}
 _NO_AUTO = {
     "mvrv_zscore", "sopr_indicator", "funding_arbitrage",
     "oi_liquidation_analyzer", "oi_divergence", "pairs_trading",
@@ -100,7 +104,7 @@ def _http(url: str, timeout: int = 12):
 def _title_from_doc(text: str, fallback: str) -> str:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     for ln in lines:
-        if ln.endswith(".py"):
+        if ln.endswith(".py") or set(ln) <= {"=", "-", "#", " "}:
             continue
         ln = re.sub(r"^[A-Za-z0-9_\.]+\s*:\s*", "", ln)
         return ln[:72]
@@ -121,7 +125,7 @@ def _discover() -> list[dict]:
         cls_name = ""
         try:
             with open(path, encoding="utf-8") as f:
-                src = f.read(2500)
+                src = f.read()
             m = re.search(r'"""(.*?)"""', src, re.S)
             doc = m.group(1) if m else ""
             for cm in re.finditer(r"^class\s+(\w+)", src, re.M):
@@ -142,6 +146,15 @@ def _discover() -> list[dict]:
             "auto": slug not in _NO_AUTO,
         })
     return rows
+
+
+def _code_num(code: str) -> int:
+    m = re.search(r"#(\d+)$", str(code or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _fmt_code(n: int) -> str:
+    return f"A1#{n:02d}"
 
 
 def _blank_book(meta: dict) -> dict:
@@ -176,6 +189,7 @@ def _load() -> dict:
             raw = {}
     books = raw.get("algos") or {}
     merged = {}
+    used_nums: set[int] = set()
     for mid, meta in catalog.items():
         old = books.get(mid) or {}
         b = _blank_book(meta)
@@ -186,7 +200,22 @@ def _load() -> dict:
         b["history"] = list(old.get("history") or [])[-400:]
         b["error"] = str(old.get("error") or "")
         b["last_signal"] = str(old.get("last_signal") or "")
+        prev = str(old.get("code") or "").strip()
+        if prev:
+            b["code"] = prev
+            used_nums.add(_code_num(prev))
+        else:
+            b["code"] = ""
         merged[mid] = b
+    nxt = 1
+    for b in merged.values():
+        if b.get("code"):
+            continue
+        while nxt in used_nums:
+            nxt += 1
+        b["code"] = _fmt_code(nxt)
+        used_nums.add(nxt)
+        nxt += 1
     _state = {
         "algos": merged,
         "pending": list(raw.get("pending") or []),
@@ -430,9 +459,9 @@ def _call_run(inst, df) -> dict:
 
 def _side_of(sig: str) -> str | None:
     s = (sig or "").upper()
-    if s in ("BUY", "LONG", "BULLISH"):
+    if s in ("BUY", "LONG", "BULLISH", "STRONG_BUY"):
         return "LONG"
-    if s in ("SELL", "SHORT", "BEARISH"):
+    if s in ("SELL", "SHORT", "BEARISH", "STRONG_SELL"):
         return "SHORT"
     return None
 
@@ -928,7 +957,11 @@ def _eval_hits(b: dict, frames: dict, marks: dict[str, dict]) -> tuple[str, list
     except Exception as e:
         return str(e)[:160], [], last
     hits: list[tuple] = []
-    for sym, df in frames.items():
+    items = list(frames.items())
+    if b.get("id") == "alg_orchestrator":
+        items.sort(key=lambda kv: -float((marks.get(kv[0]) or {}).get("qv") or 0))
+        items = items[:50]
+    for sym, df in items:
         try:
             res = _call_run(inst, df) or {}
         except Exception:
@@ -1012,6 +1045,12 @@ def _scan_once() -> None:
         st["pending"] = pending[:40]
         st["last_scan"] = _iso()
         _save()
+
+    try:
+        import algo_live
+        algo_live.on_scan(frames, marks)
+    except Exception:
+        traceback.print_exc()
 
 
 def _loop() -> None:
