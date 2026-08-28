@@ -1348,10 +1348,8 @@ def algo_overview() -> dict:
 
 
 def algo_live_overview() -> dict:
-    import algo_paper
     import algo_live
-    algo_paper.ensure_started()
-    return algo_live.overview()
+    return algo_live.overview_fast()
 
 
 def algo_live_toggle() -> dict:
@@ -1367,6 +1365,11 @@ def algo_live_close(pos_id: str) -> tuple[dict, int]:
 def algo_live_wallet() -> dict:
     import algo_live
     return algo_live.wallet(force=True)
+
+
+def algo_live_auto_follow(on: bool) -> dict:
+    import algo_live
+    return algo_live.set_auto_follow(bool(on))
 
 
 def algo_set_live_follow(aid: str) -> dict | None:
@@ -1529,10 +1532,10 @@ def algo_public_one(aid: str) -> dict | None:
     return row
 
 
-def algo_detail(aid: str) -> dict | None:
+def algo_detail(aid: str, fast: bool = False) -> dict | None:
     import algo_paper
     algo_paper.ensure_started()
-    return algo_paper.detail(str(aid or "").strip())
+    return algo_paper.detail(str(aid or "").strip(), fast=fast)
 
 
 def algo_toggle(aid: str) -> dict | None:

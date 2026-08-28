@@ -1,6 +1,6 @@
 """LIVE — seçilen sanal algoritmanın kopyası, gerçek Binance Futures.
 
-$60 marj × 15x. Sanal deftere dokunmaz. Varsayılan kaynak: squeeze_momentum.
+$50 marj × 15x. Sanal deftere dokunmaz. Varsayılan kaynak: squeeze_momentum.
 """
 from __future__ import annotations
 
@@ -28,12 +28,13 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 _STATE = os.path.join(_DIR, "algo_live_state.json")
 _FOLLOW = os.path.join(_DIR, "algo_live_follow.json")
 AID = "squeeze_momentum"
-MARGIN = 60.0
+MARGIN = 50.0
 LEV = 15
 LEV_FALLBACK = 10
 NOTIONAL = MARGIN * LEV
 MAX_POS = 6
 _lev_ok: dict[str, int] = {}
+_iso_ok: set[str] = set()
 
 
 def _liq_px(side: str, entry: float, lev: int | None = None) -> float:
@@ -46,7 +47,14 @@ def _liq_px(side: str, entry: float, lev: int | None = None) -> float:
 
 
 def _ensure_lev(symbol: str, want: int | None = None, *, required: bool = True) -> int:
-    """15x mümkünse 15, değilse 10 (daha düşük tavan varsa tavan)."""
+    """15x mümkünse 15, değilse 10 (daha düşük tavan varsa tavan).
+
+    Kaldıraç Binance'te sembol bazında kalıcı. Bu turda zaten ayarladıysak
+    tekrar POST atmıyoruz — açılış yolundan iki gereksiz tur geliş-gidiş düşüyor.
+    """
+    have = _lev_ok.get(symbol)
+    if have and (want is None or int(want) == have):
+        return have
     if symbol in _lev_ok and want is None:
         want = _lev_ok[symbol]
     if want is None:
@@ -74,6 +82,9 @@ def _ensure_lev(symbol: str, want: int | None = None, *, required: bool = True) 
         return _lev_ok.get(symbol) or LEV_FALLBACK
 
 _lock = threading.RLock()
+# Paper'a yazılacak Binance dolum bilgileri — `_lock` altında toplanır, dışında uygulanır.
+_mirror_q: dict[str, dict] = {}
+_mirror_q_lock = threading.Lock()
 _state: dict | None = None
 _dual: bool | None = None
 _wallet_cache: dict = {"t": 0.0, "row": {}}
@@ -92,7 +103,7 @@ def _live_ov_refresh() -> None:
             _live_ov_cache["data"] = result
             _live_ov_cache["t"] = _time.time()
         except Exception:
-            pass
+            traceback.print_exc()
         _time.sleep(3)
 
 
@@ -147,6 +158,8 @@ def _blank() -> dict:
         "pending_open": [],
         "follow_aid": AID,
         "follow_since": 0,
+        "auto_follow": True,
+        "auto_follow_mark": None,
     }
 
 
@@ -166,6 +179,8 @@ def _write_follow(aid: str, since: int = 0, title: str = "") -> None:
         "follow_aid": str(aid or "").strip(),
         "follow_since": int(since or 0),
         "title": str(title or ""),
+        # Panel otoseçim durumunu kilit almadan bu dosyadan okuyor.
+        "auto_follow": bool(_state.get("auto_follow", True)) if _state else True,
     }
     tmp = _FOLLOW + ".tmp"
     try:
@@ -218,6 +233,12 @@ def _load() -> dict:
     b["pending_close"] = list(raw.get("pending_close") or [])
     b["pending_open"] = list(raw.get("pending_open") or [])
     b["follow_aid"] = str(raw.get("follow_aid") or AID).strip() or AID
+    b["auto_follow"] = bool(raw.get("auto_follow", True))
+    try:
+        mark = raw.get("auto_follow_mark")
+        b["auto_follow_mark"] = None if mark is None else int(mark)
+    except (TypeError, ValueError):
+        b["auto_follow_mark"] = None
     try:
         b["follow_since"] = int(raw.get("follow_since") or 0)
     except (TypeError, ValueError):
@@ -282,6 +303,14 @@ def wallet(force: bool = False) -> dict:
     return row
 
 
+def auto_follow_on() -> bool:
+    """Otoseçim açık mı — kilitsiz okuma (panel her saniye soruyor)."""
+    d = _read_follow()
+    if "auto_follow" in d:
+        return bool(d.get("auto_follow"))
+    return True
+
+
 def follow_aid() -> str:
     aid = str(_read_follow().get("follow_aid") or "").strip()
     if aid:
@@ -292,11 +321,18 @@ def follow_aid() -> str:
 
 
 def has_src(src_id: str) -> bool:
+    """Kilitsiz okuma: paper bunu kendi kilidini tutarken çağırıyor; `_lock`
+    beklersek iki kilit birbirini kilitler (deadlock). Bayat okumak zararsız."""
     sid = str(src_id or "")
     if not sid:
         return False
-    with _lock:
-        return any(str(p.get("src_id") or "") == sid for p in _load().get("positions") or [])
+    for _ in range(3):
+        try:
+            poss = list(_load().get("positions") or [])
+            return any(str(p.get("src_id") or "") == sid for p in poss)
+        except RuntimeError:
+            time.sleep(0.01)
+    return False
 
 
 def set_follow(aid: str) -> dict | None:
@@ -315,11 +351,17 @@ def set_follow(aid: str) -> dict | None:
     title = f"{src.get('code') or nid} — sanal kopya"
     with _lock:
         b = _load()
+        # Elle seçim açık bir tercihtir; otoseçim açık kalsaydı bunu 10 işlem
+        # sonra geri alırdı. Panel butonu tekrar açana kadar seçim sabit.
+        b["auto_follow"] = False
+        b["auto_follow_mark"] = None
         if str(b.get("follow_aid") or "") != nid:
             b["follow_aid"] = nid
             b["follow_since"] = int(time.time() * 1000)
-            _skip_open_paper(b, list(src.get("positions") or []))
             b["title"] = title
+            # Yeni defterin şu an açık pozisyonlarını kopyalamıyoruz —
+            # sadece bundan sonra açtıkları. Toplu kopya girişi zarar ettiriyor.
+            _skip_open_paper(b, list(src.get("positions") or []))
         _write_follow(nid, int(b.get("follow_since") or 0), str(b.get("title") or title))
         _save()
     return overview()
@@ -333,6 +375,22 @@ def _meta() -> dict | None:
     return None
 
 
+# Yeni açılan pozisyonu "Binance'te yok" diye silmeden önce beklenecek süre.
+# `_bn_opens` önbelleği 5 sn + dolumun yansıma gecikmesi için bolca pay.
+_FLAT_GRACE_MS = 30_000
+
+_warn_last: dict[str, float] = {}
+
+
+def _warn_throttled(tag: str, err: object, every: float = 30.0) -> None:
+    """Binance kesintisi sessiz kalmasın; log'u da boğmasın."""
+    now = time.time()
+    if now - _warn_last.get(tag, 0.0) < every:
+        return
+    _warn_last[tag] = now
+    print(f"[algo_live] {tag} başarısız: {str(err)[:160]}", file=sys.stderr, flush=True)
+
+
 def _bn_opens() -> dict[str, dict] | None:
     """None = okunamadı (pozisyonları silme). {} = gerçekten açık yok."""
     now = time.time()
@@ -340,9 +398,11 @@ def _bn_opens() -> dict[str, dict] | None:
         return _bn_opens_cache["row"]
     try:
         rows = fapi.position_risk()
-    except Exception:
+    except Exception as e:
+        _warn_throttled("position_risk", e)
         return None
     if not isinstance(rows, list):
+        _warn_throttled("position_risk", f"beklenmeyen yanıt: {type(rows).__name__}")
         return None
     out: dict[str, dict] = {}
     for r in rows or []:
@@ -411,11 +471,38 @@ def _sync_binance(b: dict, bn: dict | None = None) -> None:
         bn = _bn_opens()
     if bn is None:
         return
+    # Anlık görüntü, pozisyon açılmadan önce alınmış olabilir (önbellek 5 sn) ya da
+    # Binance dolumu henüz yansıtmamış olabilir. O pozisyonu "kapanmış" sayıp silersek
+    # bir sonraki tur onu yeniden açar -> Binance'te çift pozisyon. Bu yüzden taze
+    # pozisyonlara dokunmuyoruz.
+    snap_ms = int(_bn_opens_cache.get("t", 0.0) * 1000)
+    now_ms = int(time.time() * 1000)
     kept = []
     have = set()
     for p in b.get("positions") or []:
         sym = str(p.get("symbol") or "")
         if sym not in bn:
+            opened_ms = int(p.get("opened_ms") or 0)
+            too_new = opened_ms and (
+                opened_ms >= snap_ms - _FLAT_GRACE_MS
+                or now_ms - opened_ms < _FLAT_GRACE_MS
+            )
+            if too_new:
+                kept.append(p)
+                have.add(sym)
+                continue
+            # Genç bir pozisyonu kapanmış saymak, çift açılmanın başlangıcıydı:
+            # defterden silinir, sonraki tur yeniden açar. Koruma tuttuğu için
+            # buraya artık düşmemeli; düşerse sessiz kalmasın.
+            age_s = (now_ms - opened_ms) / 1000.0 if opened_ms else -1
+            if age_s < 0 or age_s < 300:
+                print(
+                    f"[algo_live] DİKKAT {sym}: Binance anlık görüntüsünde yok,"
+                    f" pozisyon yaşı {age_s:.0f} sn (opened_ms={opened_ms or 'YOK'}),"
+                    f" görüntü yaşı {(now_ms - snap_ms) / 1000.0:.1f} sn"
+                    " — kapanmış sayılıyor, çift açılma riski",
+                    file=sys.stderr, flush=True,
+                )
             exit_px = float(p.get("mark") or p.get("entry") or 0)
             qty = float(p.get("qty") or 0)
             entry = float(p.get("entry") or 0)
@@ -460,7 +547,7 @@ def _sync_binance(b: dict, bn: dict | None = None) -> None:
         amt = abs(float(r.get("positionAmt") or 0))
         if amt > 0:
             _apply_bn_row(p, r)
-            _mirror_fill_to_paper(p)
+            _queue_mirror_fill(p)
         kept.append(p)
         have.add(sym)
     follow = str(b.get("follow_aid") or AID)
@@ -505,6 +592,34 @@ def _apply_bn_row(p: dict, r: dict) -> None:
     p["fill"] = "binance"
 
 
+def _queue_mirror_fill(lp: dict) -> None:
+    """`_sync_binance` `_lock` altında çalışıyor; paper kilidini burada isteyemeyiz.
+    İşi kuyruğa al, `_flush_mirror_fills()` kilit bırakıldıktan sonra uygular."""
+    sid = str(lp.get("src_id") or "")
+    entry = float(lp.get("entry") or 0)
+    if not sid or entry <= 0:
+        return
+    with _mirror_q_lock:
+        _mirror_q[sid] = {
+            "src_id": sid,
+            "src_aid": str(lp.get("src_aid") or ""),
+            "entry": entry,
+            "mark": float(lp.get("mark") or 0),
+        }
+
+
+def _flush_mirror_fills() -> None:
+    """Sadece `_lock` bırakıldıktan sonra çağır."""
+    with _mirror_q_lock:
+        jobs = list(_mirror_q.values())
+        _mirror_q.clear()
+    for job in jobs:
+        try:
+            _mirror_fill_to_paper(job)
+        except Exception:
+            traceback.print_exc()
+
+
 def _mirror_fill_to_paper(lp: dict) -> None:
     """Kaynak sanal pozisyon Binance giriş/mark'ına uysun — aynı fiyat, aynı yön."""
     sid = str(lp.get("src_id") or "")
@@ -545,10 +660,14 @@ def _mirror_fill_to_paper(lp: dict) -> None:
 
 def _mark_one(p: dict, marks: dict) -> dict:
     info = marks.get(p["symbol"]) or {}
-    mark = float(p.get("mark") or info.get("mark") or info.get("price") or p.get("entry") or 0)
+    # Fiyat önce canlı akıştan (bookTicker) alınır: `position_risk` çağrısı
+    # takılırsa `p["mark"]` donup kalıyor, ekrandaki "Anlık" değeri de donuyordu.
+    # `marks` ayrı bir uçtan beslendiği için bağımsız olarak tazelenmeye devam eder.
+    live_px = float(info.get("mark") or info.get("price") or 0)
+    mark = live_px or float(p.get("mark") or 0) or float(p.get("entry") or 0)
     qty = float(p.get("qty") or 0)
     margin = float(p.get("margin") or MARGIN)
-    exit_est = float(p.get("mark") or 0) or paper._fill_px(p["side"], "close", info) or mark
+    exit_est = mark or paper._fill_px(p["side"], "close", info)
     entry = float(p.get("entry") or 0)
     gross = paper._pnl(p["side"], entry, mark, qty)
     fee_open = float(p.get("fee_open") or 0)
@@ -728,6 +847,80 @@ def _sync_step_trail(lp: dict) -> None:
     paper._note_lock(lp)
 
 
+def overview_fast() -> dict:
+    """Ekran için: cache, yoksa yerel defter. Binance beklemez."""
+    if _live_ov_cache.get("data"):
+        return _live_ov_cache["data"]
+    if _ov_snap[1] is not None:
+        return _ov_snap[1]
+    try:
+        return _overview_from_local()
+    except Exception:
+        traceback.print_exc()
+        return {"ok": True, "id": AID, "code": "LIVE", "title": "LIVE",
+                "positions": [], "history": [], "wallet": 0, "available": 0,
+                "unreal": 0, "connected": False, "active": True, "trades": 0,
+                "wins": 0, "win_pct": 0, "realized": 0, "fees": 0, "error": ""}
+
+
+def _overview_from_local() -> dict:
+    """Ekran defteri okur. `_lock` emir gönderirken saniyelerce meşgul olabilir;
+    bekleyip donmak yerine 0.5s dene, olmazsa kilitsiz oku (bayat veri > boş ekran)."""
+    marks = paper._px_cache[1] or {}
+    w = _wallet_cache.get("row") or {}
+    got = _lock.acquire(timeout=0.5)
+    try:
+        b = dict(_load())
+    finally:
+        if got:
+            _lock.release()
+    return _overview_row(b, marks, w)
+
+
+def _overview_row(b: dict, marks: dict, w: dict) -> dict:
+    follow = str(b.get("follow_aid") or AID)
+    src_book = (paper._load().get("algos") or {}).get(follow) or {}
+    poss = [_mark_one(p, marks) for p in b.get("positions") or []]
+    hist = list(b.get("history") or [])[-80:][::-1]
+    wins = sum(1 for h in hist if float(h.get("net") or 0) > 0)
+    realized = sum(float(h.get("net") or 0) for h in hist)
+    equity = float(w.get("wallet") or 0) + float(w.get("unreal") or 0)
+    return {
+        "ok": True,
+        "id": AID,
+        "code": "LIVE",
+        "title": b.get("title") or src_book.get("title") or "LIVE",
+        "follow_aid": follow,
+        "follow_code": src_book.get("code") or follow,
+        "follow_title": src_book.get("title") or "",
+        "auto_follow": bool(b.get("auto_follow", True)),
+        "auto": True,
+        "active": bool(b.get("active")),
+        "live": True,
+        "error": b.get("error") or w.get("error") or "",
+        "connected": bool(w.get("ok")),
+        "wallet": round(float(w.get("wallet") or 0), 2),
+        "available": round(float(w.get("available") or 0), 2),
+        "wallet_unreal": round(float(w.get("unreal") or 0), 2),
+        "cash_free": round(float(w.get("available") or 0), 2),
+        "equity": round(equity, 2),
+        "net_pnl": round(realized + sum(p["net"] for p in poss), 2),
+        "unreal": round(sum(p["net"] for p in poss), 2),
+        "fees": round(float(b.get("fees") or 0), 2),
+        "open_n": len(poss),
+        "wins": wins,
+        "trades": len(b.get("history") or []),
+        "win_pct": round(100.0 * wins / len(hist), 1) if hist else 0.0,
+        "realized": round(realized, 2),
+        "positions": poss,
+        "history": hist,
+        "last_signal": b.get("last_signal") or "",
+        "last_scan": b.get("last_scan") or "",
+        "margin": MARGIN,
+        "lev": LEV,
+    }
+
+
 def overview() -> dict:
     global _ov_snap
     now = time.time()
@@ -755,47 +948,12 @@ def overview() -> dict:
                     _maybe_stop_close(b, lp, marks)
             _save()
         except Exception:
-            pass
-        follow = str(b.get("follow_aid") or AID)
-        src_book = (paper._load().get("algos") or {}).get(follow) or {}
-        poss = [_mark_one(p, marks) for p in b.get("positions") or []]
-        hist = list(b.get("history") or [])[-80:][::-1]
-        wins = sum(1 for h in hist if float(h.get("net") or 0) > 0)
-        realized = sum(float(h.get("net") or 0) for h in hist)
-        equity = float(w.get("wallet") or 0) + float(w.get("unreal") or 0)
-        row = {
-            "id": AID,
-            "code": "LIVE",
-            "title": b.get("title") or src_book.get("title") or "LIVE",
-            "follow_aid": follow,
-            "follow_code": src_book.get("code") or follow,
-            "follow_title": src_book.get("title") or "",
-            "auto": True,
-            "active": bool(b.get("active")),
-            "live": True,
-            "error": b.get("error") or w.get("error") or "",
-            "connected": bool(w.get("ok")),
-            "wallet": round(float(w.get("wallet") or 0), 2),
-            "available": round(float(w.get("available") or 0), 2),
-            "wallet_unreal": round(float(w.get("unreal") or 0), 2),
-            "cash_free": round(float(w.get("available") or 0), 2),
-            "equity": round(equity, 2),
-            "net_pnl": round(realized + sum(p["net"] for p in poss), 2),
-            "unreal": round(sum(p["net"] for p in poss), 2),
-            "fees": round(float(b.get("fees") or 0), 2),
-            "open_n": len(poss),
-            "wins": wins,
-            "trades": len(b.get("history") or []),
-            "win_pct": round(100.0 * wins / len(hist), 1) if hist else 0.0,
-            "realized": round(realized, 2),
-            "positions": poss,
-            "history": hist,
-            "last_signal": b.get("last_signal") or "",
-            "last_scan": b.get("last_scan") or "",
-            "margin": MARGIN,
-            "lev": LEV,
-        }
+            traceback.print_exc()
+        row = _overview_row(b, marks, w)
+    _flush_mirror_fills()
     _ov_snap = (now, row)
+    _live_ov_cache["data"] = row
+    _live_ov_cache["t"] = now
     return row
 
 
@@ -807,8 +965,16 @@ def toggle() -> dict:
     return overview()
 
 
-def _place(symbol: str, side: str, qty: float, step: float, close: bool = False, lev: int | None = None) -> dict:
+def _ensure_isolated(symbol: str) -> None:
+    """Marj tipi de sembol bazında kalıcı — her emirde tekrar göndermeye gerek yok."""
+    if symbol in _iso_ok:
+        return
     fapi.set_isolated(symbol)
+    _iso_ok.add(symbol)
+
+
+def _place(symbol: str, side: str, qty: float, step: float, close: bool = False, lev: int | None = None) -> dict:
+    _ensure_isolated(symbol)
     _ensure_lev(symbol, lev, required=not close)
     q = _qty_fmt(qty, step)
     if float(q) <= 0:
@@ -909,13 +1075,6 @@ def close_pos(pos_id: str, reason: str = "manuel") -> tuple[dict, int]:
             b["error"] = str(e)[:160]
             _save()
             return {"error": str(e)[:160]}, 400
-        src = str(hit.get("src_id") or "")
-        if src:
-            skip = b.setdefault("skip_src", [])
-            if src not in skip:
-                skip.append(src)
-                if len(skip) > 80:
-                    del skip[:-80]
         _save()
         return {"ok": True, "closed": rec, "book": overview()}, 200
 
@@ -973,15 +1132,28 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None, src_id: str
     qty = paper._round_step(notional / px, step)
     if qty <= 0 or qty * px < float(filt.get("min_notional") or 5):
         return None
-    w = wallet(force=True)
+    # force=True her açılışta ekstra bir imzalı çağrı demekti; 4 sn'lik önbellek
+    # bu güvenlik kontrolü için yeterli. Marj gerçekten yetmezse Binance reddediyor.
+    w = wallet()
     if not w.get("ok") or float(w.get("available") or 0) < MARGIN * 1.05:
         b["error"] = "USDT yetersiz"
         return None
+    t_order = time.time()
     try:
         order = _place(symbol, side, qty, step, close=False, lev=lev)
     except Exception as e:
         b["error"] = str(e)[:160]
         return None
+    if src_id:
+        src_ms = int((src or {}).get("opened_ms") or 0)
+        lag = (time.time() * 1000 - src_ms) / 1000.0 if src_ms else -1
+        print(
+            f"[algo_live] {symbol} açıldı — emir {(time.time() - t_order) * 1000:.0f} ms,"
+            f" sanaldan bu yana {lag:.2f} sn",
+            file=sys.stderr, flush=True,
+        )
+    # Önbellekteki anlık görüntü bu emri bilmiyor; bir sonraki senkron taze çekmeli.
+    _bn_opens_cache["t"] = 0.0
     fill_px, fill_qty = _fill_px_qty(order, px, qty)
     fee = paper._fee_on(fill_qty, fill_px)
     pos = {
@@ -1041,7 +1213,7 @@ def follow_open(paper_pos: dict, marks: dict, df=None) -> dict | None:
             src=paper_pos,
         )
         pending = b.setdefault("pending_open", [])
-        if pos is None and pid and b.get("active") and pid not in (b.get("skip_src") or []):
+        if pos is None and pid and b.get("active"):
             if pid not in pending:
                 pending.append(pid)
             if len(pending) > 20:
@@ -1187,6 +1359,112 @@ def _paper_source() -> dict:
     return (st.get("algos") or {}).get(follow_aid()) or {}
 
 
+# --- Otomatik takip: sıralamanın tepesindeki sanal defteri izle ---
+# Takip edilen defter bu kadar işlem daha kapatınca sıralamaya yeniden bak.
+AUTO_FOLLOW_EVERY_TRADES = 10
+# Aday defter en az bu kadar kapanmış işlem göstermeli — tek şanslı işlemle
+# tepeye çıkan yeni defter canlı parayı almasın.
+AUTO_FOLLOW_MIN_TRADES = 10
+
+
+def _auto_follow_step() -> None:
+    """Gerekiyorsa takip edilen defteri sıralama liderine geçirir.
+
+    `on_scan` içinde `_lock` alınmadan çağrılır. Ölçüt sayfanın sıralamasıyla
+    aynı: `paper.overview()` defterleri özkaynağa göre sıralı döndürüyor, yani
+    "en başta olan" ile "otomatik seçilen" hep aynı defter oluyor.
+    """
+    try:
+        with _lock:
+            b = _load()
+            if not b.get("auto_follow", True):
+                return
+            mark = b.get("auto_follow_mark")
+        follow = follow_aid()
+        books = paper._load().get("algos") or {}
+        cur = books.get(follow)
+        trades = len((cur or {}).get("history") or [])
+        if cur is None or mark is None:
+            # İlk açılış ya da takip edilen defter kaybolmuş: beklemeden lidere geç.
+            mark = -AUTO_FOLLOW_EVERY_TRADES
+        elif int(mark) > trades:
+            with _lock:
+                _load()["auto_follow_mark"] = trades
+                _save()
+            return
+        if trades - int(mark) < AUTO_FOLLOW_EVERY_TRADES:
+            return
+
+        cards = [
+            c for c in (paper.overview().get("algos") or [])
+            if int(c.get("trades") or 0) >= AUTO_FOLLOW_MIN_TRADES
+        ]
+        best = cards[0] if cards else None
+        nid = str((best or {}).get("id") or "")
+        with _lock:
+            b = _load()
+            b["auto_follow_mark"] = trades
+            if not nid or nid == follow:
+                _save()
+                return
+            src = books.get(nid) or {}
+            code = str(best.get("code") or nid)
+            b["follow_aid"] = nid
+            b["follow_since"] = int(time.time() * 1000)
+            b["title"] = f"{code} — sanal kopya"
+            b["auto_follow_mark"] = len(src.get("history") or [])
+            # Yeni defterin şu an açık pozisyonlarını kopyalamıyoruz.
+            _skip_open_paper(b, list(src.get("positions") or []))
+            _write_follow(nid, int(b["follow_since"]), str(b["title"]))
+            _save()
+        print(
+            f"[algo_live] otomatik takip değişti: {follow} -> {code}"
+            f" (özkaynak lideri, {best.get('trades')} işlem,"
+            f" net {best.get('net_pnl')} $)",
+            file=sys.stderr, flush=True,
+        )
+    except Exception:
+        traceback.print_exc()
+
+
+def set_auto_follow(on: bool) -> dict:
+    """Otoseçimi aç/kapat. Kapalıyken takip o an seçili defterde kalır."""
+    with _lock:
+        b = _load()
+        b["auto_follow"] = bool(on)
+        # Açıkken hemen değerlendirsin; kapalıyken sayaç anlamsız.
+        b["auto_follow_mark"] = None
+        _write_follow(
+            str(b.get("follow_aid") or ""),
+            int(b.get("follow_since") or 0),
+            str(b.get("title") or ""),
+        )
+        _save()
+    return {"ok": True, "auto_follow": bool(on), "follow_aid": follow_aid()}
+
+
+def _orphan_index(b: dict, follow: str) -> dict:
+    """Takip edilenden farklı deftere ait live pozisyonların kaynaklarını bul.
+
+    Sadece gerçekten sahipsiz pozisyon varsa tüm defterleri tarar; normal
+    durumda (herkes takip edilen defterden) boş sözlük döner.
+    """
+    aids = {
+        str(p.get("src_aid") or "")
+        for p in b.get("positions") or []
+        if str(p.get("src_aid") or "") and str(p.get("src_aid") or "") != follow
+    }
+    if not aids:
+        return {}
+    out: dict = {}
+    books = (paper._load().get("algos") or {})
+    for aid in aids:
+        for p in (books.get(aid) or {}).get("positions") or []:
+            if p.get("id"):
+                out[str(p["id"])] = p
+    return out
+
+
 def _belongs_to_follow(lp: dict, follow: str) -> bool:
     src_aid = str(lp.get("src_aid") or "")
     if not src_aid:
@@ -1214,6 +1492,9 @@ def on_scan(frames: dict, marks: dict) -> None:
             b["last_scan"] = _iso()
             _save()
         return
+    # Karar kilit ALINMADAN önce: sanal defteri okumak `paper._lock` istiyor,
+    # `_lock` tutarken beklemek iki kilidi karşılıklı bloklar.
+    _auto_follow_step()
     follow = follow_aid()
     src_book = _paper_source()
     paper_pos = list(src_book.get("positions") or [])
@@ -1230,15 +1511,21 @@ def on_scan(frames: dict, marks: dict) -> None:
             b["error"] = str(e)[:160]
         _flush_pending(b)
         want_close = _pending_syms(b)
+        orphan_by_id = _orphan_index(b, follow)
         for lp in list(b.get("positions") or []):
-            if not _belongs_to_follow(lp, follow):
-                continue
-            src = by_id.get(str(lp.get("src_id") or ""))
-            if not src:
-                src = by_sym.get(str(lp.get("symbol") or ""))
-                if src:
-                    lp["src_id"] = src.get("id")
-                    lp["src_aid"] = follow
+            if _belongs_to_follow(lp, follow):
+                src = by_id.get(str(lp.get("src_id") or ""))
+                if not src:
+                    src = by_sym.get(str(lp.get("symbol") or ""))
+                    if src:
+                        lp["src_id"] = src.get("id")
+                        lp["src_aid"] = follow
+            else:
+                # Takip başka deftere geçti; bu pozisyon eskisinden kaldı.
+                # Kendi kaynak defterine göre stop'u ve kapanışı yönetilmeye
+                # devam etsin — yoksa sahipsiz kalıp açıkta unutuluyor.
+                # Sembol eşlemesi yok: başka defterin aynı coinine yapışmasın.
+                src = orphan_by_id.get(str(lp.get("src_id") or ""))
             if src and str(lp.get("symbol") or "") not in want_close:
                 _copy_paper_atr(lp, src)
                 info = marks.get(str(lp.get("symbol") or "")) or {}
@@ -1251,26 +1538,47 @@ def on_scan(frames: dict, marks: dict) -> None:
                 continue
             _queue_close(b, str(lp.get("symbol") or ""), "paper_close", str(lp.get("src_id") or ""))
             _flush_symbol(b, str(lp.get("symbol") or ""), "paper_close", str(lp.get("src_id") or ""))
-        if b.get("active"):
-            blocked = _pending_syms(b)
-            live_src = {str(p.get("src_id") or "") for p in b.get("positions") or []}
-            live_sym = {str(p.get("symbol") or "") for p in b.get("positions") or []}
-            still = []
-            for pid in list(b.get("pending_open") or []):
-                p = by_id.get(pid)
-                if not p or pid in (b.get("skip_src") or []) or pid in live_src:
-                    continue
-                if p.get("symbol") in live_sym or p.get("symbol") in blocked:
-                    still.append(pid)
-                    continue
-                got = _open_pos(
-                    b, p["symbol"], p["side"], marks, frames.get(p["symbol"]),
-                    src_id=pid, src=p,
-                )
-                if not got:
-                    still.append(pid)
-            b["pending_open"] = still
+        _mirror_opens(b, paper_pos, marks, frames)
         _save()
+    _flush_mirror_fills()
+
+
+def _mirror_opens(b: dict, paper_pos: list, marks: dict, frames: dict | None = None) -> None:
+    """Sanal açıksa LIVE aç. Sorgulama, skip yok."""
+    if not b.get("active"):
+        return
+    frames = frames or {}
+    blocked = _pending_syms(b)
+    live_src = {str(p.get("src_id") or "") for p in b.get("positions") or []}
+    live_sym = {str(p.get("symbol") or "") for p in b.get("positions") or []}
+    paper_ids = {str(p.get("id") or "") for p in paper_pos if p.get("id")}
+    skip = set(b.get("skip_src") or [])
+    pending = b.setdefault("pending_open", [])
+    for p in paper_pos:
+        pid = str(p.get("id") or "")
+        sym = str(p.get("symbol") or "")
+        if not pid or not sym:
+            continue
+        if pid in skip:
+            if pid in pending:
+                pending.remove(pid)
+            continue
+        if pid in live_src or sym in live_sym or sym in blocked:
+            if pid in pending:
+                pending.remove(pid)
+            continue
+        got = _open_pos(
+            b, sym, str(p.get("side") or ""), marks, frames.get(sym),
+            src_id=pid, src=p,
+        )
+        if got:
+            live_src.add(pid)
+            live_sym.add(sym)
+            if pid in pending:
+                pending.remove(pid)
+        elif pid not in pending:
+            pending.append(pid)
+    b["pending_open"] = [pid for pid in pending if pid in paper_ids]
 
 
 def _iso_ms(s: str) -> int:

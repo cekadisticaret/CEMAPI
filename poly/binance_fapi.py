@@ -30,7 +30,7 @@ def secret() -> str:
     return (os.getenv("BINANCE_FAPI_SECRET") or "").strip()
 
 
-def _public(path: str, params: dict | None = None, timeout: int = 12):
+def _public(path: str, params: dict | None = None, timeout: int = 5):
     q = urllib.parse.urlencode(params or {})
     url = f"{_BASE}{path}" + (f"?{q}" if q else "")
     req = urllib.request.Request(url, headers=_HDR_UA)
@@ -38,7 +38,7 @@ def _public(path: str, params: dict | None = None, timeout: int = 12):
         return json.loads(r.read().decode())
 
 
-def _signed(method: str, path: str, params: dict | None = None, timeout: int = 15):
+def _signed(method: str, path: str, params: dict | None = None, timeout: int = 8):
     if not configured():
         raise RuntimeError("Binance Futures anahtarı yok")
     p = dict(params or {})

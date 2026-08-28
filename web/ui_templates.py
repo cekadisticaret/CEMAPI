@@ -400,16 +400,26 @@ async function load(){
     $('mdlnote').innerHTML = `<span class="werr">Veri yüklenemedi: ${e.message}</span>`;
   }
 }
+let es = null, esBackoff = 1000, esLast = Date.now();
 function startStream(){
-  const es = new EventSource(BASE + '/api/overview/stream');
-  let fails = 0;
-  es.onopen = () => { fails = 0; };
+  try { if (es) es.close(); } catch(e) {}
+  es = new EventSource(BASE + '/api/overview/stream');
+  es.onopen = () => { esBackoff = 1000; esLast = Date.now(); };
   es.onmessage = ev => {
-    fails = 0;
+    esLast = Date.now(); esBackoff = 1000;
     try { const d = JSON.parse(ev.data); if (d && d.models) render(d); } catch(e) {}
   };
-  es.onerror = () => { fails++; };
+  es.onerror = () => {
+    // Sunucu yeniden başlarsa tarayıcı bağlantıyı kalıcı kapatır; elle geri bağlan.
+    if (es && es.readyState === EventSource.CLOSED){
+      setTimeout(startStream, esBackoff);
+      esBackoff = Math.min(esBackoff * 2, 30000);
+    }
+  };
 }
+setInterval(() => {
+  if (Date.now() - esLast > 25000){ esLast = Date.now(); startStream(); }
+}, 5000);
 
 function renderCons(d){
   const el = $('cons'); if (!el) return;
@@ -809,16 +819,25 @@ async function load(){
   if (r.status === 401) return location.href = BASE + '/giris';
   render(await r.json());
 }
+let es = null, esBackoff = 1000, esLast = Date.now();
 function startStream(){
-  const es = new EventSource(BASE + '/api/overview/stream');
-  let fails = 0;
-  es.onopen = () => { fails = 0; };
+  try { if (es) es.close(); } catch(e) {}
+  es = new EventSource(BASE + '/api/overview/stream');
+  es.onopen = () => { esBackoff = 1000; esLast = Date.now(); };
   es.onmessage = ev => {
-    fails = 0;
+    esLast = Date.now(); esBackoff = 1000;
     try { const d = JSON.parse(ev.data); if (d) render(d); } catch(e) {}
   };
-  es.onerror = () => { fails++; };
+  es.onerror = () => {
+    if (es && es.readyState === EventSource.CLOSED){
+      setTimeout(startStream, esBackoff);
+      esBackoff = Math.min(esBackoff * 2, 30000);
+    }
+  };
 }
+setInterval(() => {
+  if (Date.now() - esLast > 25000){ esLast = Date.now(); startStream(); }
+}, 5000);
 
 const pick = () => PICK || MIRROR;
 const bookName = k => { const b = ROWS.find(x => x.book === k); return b ? b.short : k; };
@@ -1235,12 +1254,13 @@ async function loadSnap(){
     drawMkts(); fillSpot(); drawPos(); drawChart();
   } catch(e){}
 }
+let es = null, esBackoff = 1000, esLast = Date.now();
 function startSnapStream(){
-  const es = new EventSource(BASE + '/api/desk/snapshot/stream');
-  let fails = 0;
-  es.onopen = () => { fails = 0; };
+  try { if (es) es.close(); } catch(e) {}
+  es = new EventSource(BASE + '/api/desk/snapshot/stream');
+  es.onopen = () => { esBackoff = 1000; esLast = Date.now(); };
   es.onmessage = ev => {
-    fails = 0;
+    esLast = Date.now(); esBackoff = 1000;
     try {
       const d = JSON.parse(ev.data);
       if (!d || d.ok === false) return;
@@ -1250,8 +1270,17 @@ function startSnapStream(){
       drawMkts(); fillSpot(); drawPos(); drawChart();
     } catch(e) {}
   };
-  es.onerror = () => { fails++; if (fails >= 3) setTimeout(loadSnap, 5000); };
+  es.onerror = () => {
+    setTimeout(loadSnap, 3000);
+    if (es && es.readyState === EventSource.CLOSED){
+      setTimeout(startSnapStream, esBackoff);
+      esBackoff = Math.min(esBackoff * 2, 30000);
+    }
+  };
 }
+setInterval(() => {
+  if (Date.now() - esLast > 25000){ esLast = Date.now(); startSnapStream(); }
+}, 5000);
 
 async function loadQuote(){
   const amt = +$('amt').value;
@@ -1948,6 +1977,7 @@ ALGOS = r"""<!doctype html><html lang="tr"><head>
       </div>
       <div class="topbar-actions">
         <span class="alg-topstat" id="topstat">—</span>
+        <button type="button" class="btn auto-btn" id="autoBtn" title="Açıkken en çok kazanan defter otomatik seçilir">Otoseçim —</button>
         <span class="clock" id="clock">—</span>
       </div>
       <div class="topbar-mobile">
@@ -1966,6 +1996,7 @@ ALGOS = r"""<!doctype html><html lang="tr"><head>
 </div>
 <script>
 const BASE = {{ base|tojson }};
+const BOOT = {{ boot|tojson }};
 const $ = id => document.getElementById(id);
 const money = (n, s=true) => {
   const v = Number(n||0);
@@ -2031,11 +2062,13 @@ function card(a, best, i, liveOn){
 }
 function paint(d){
   if (!d || !d.ok) return;
+  try {
   $('sub').textContent = d.subtitle || '';
   $('topstat').innerHTML = `Net P&L ${signed(d.net_pnl)} · kom. ${signed(-Math.abs(d.fees||0))} · Açık: ${d.open_n||0}`;
   const rows = (d.algos||[]).slice().sort((a,b)=> (b.equity||0)-(a.equity||0));
   const top = bestWrId(rows);
   const follow = d.live_follow || '';
+  paintAuto(d.live_auto !== false, rows, follow);
   $('grid').innerHTML = rows.map((a,i) => card(a, a.id===top, i, a.id===follow)).join('') || '<div class="mut">ALG klasörü boş</div>';
   const pend = d.pending||[];
   $('pendHd').textContent = 'İŞLEM BEKLEYEN — ' + pend.length + ' SİNYAL — ' + (d.coin_n||0) + ' COİN (Grafik Analiz)';
@@ -2044,6 +2077,7 @@ function paint(d){
     <span class="mut">${p.note||''}</span>
     <span class="alg-dir ${p.side==='LONG'?'up':'dn'}">${p.side==='LONG'?'çıkar':'düşer'}</span>
   </div>`).join('') || '<div class="mut" style="padding:10px">Tarama bekleniyor…</div>';
+  } catch (e) {}
 }
 let busy = false;
 let poller = 0;
@@ -2058,32 +2092,68 @@ async function load(){
   } catch (e) {}
   finally { busy = false; }
 }
+let es = null, esBackoff = 1000, esLast = Date.now();
 function startStream(){
-  const es = new EventSource(BASE + '/api/algo/overview/stream');
-  let fails = 0;
+  try { if (es) es.close(); } catch (e) {}
+  es = new EventSource(BASE + '/api/algo/overview/stream');
   es.onopen = () => {
-    fails = 0;
+    esBackoff = 1000; esLast = Date.now();
     if (poller) { clearInterval(poller); poller = 0; }
   };
   es.onmessage = ev => {
-    fails = 0;
+    esLast = Date.now(); esBackoff = 1000;
+    if (poller) { clearInterval(poller); poller = 0; }
     try { paint(JSON.parse(ev.data)); } catch (e) {}
   };
   es.onerror = () => {
-    fails++;
-    if (fails >= 3 && !poller) poller = setInterval(load, 8000);
+    if (!poller) poller = setInterval(load, 8000);
+    if (es && es.readyState === EventSource.CLOSED){
+      setTimeout(startStream, esBackoff);
+      esBackoff = Math.min(esBackoff * 2, 30000);
+    }
   };
 }
+setInterval(() => {
+  if (Date.now() - esLast > 25000){ esLast = Date.now(); startStream(); }
+}, 5000);
 $('grid').onclick = e => {
   const btn = e.target.closest('.alg-live-btn');
   if (btn) { e.preventDefault(); e.stopPropagation(); setLiveFollow(btn); return; }
   const cardEl = e.target.closest('.alg-card[data-href]');
   if (cardEl) location.href = cardEl.dataset.href;
 };
+let autoOn = true;
+function paintAuto(on, rows, follow){
+  autoOn = !!on;
+  const b = $('autoBtn');
+  if (!b) return;
+  const cur = (rows||[]).find(a => a.id === follow);
+  const ad = cur ? cur.code : '—';
+  b.textContent = 'Otoseçim: ' + (on ? 'AÇIK' : 'KAPALI');
+  b.classList.toggle('on', on);
+  b.title = on
+    ? 'En çok kazanan defter otomatik seçiliyor. Kapatırsan ' + ad + ' üzerinde sabit kalır.'
+    : ad + ' üzerinde sabit. Aç = en çok kazanana otomatik geç.';
+}
+$('autoBtn').onclick = async () => {
+  const next = !autoOn;
+  const msg = next
+    ? 'Otoseçim açılacak: LIVE en çok kazanan sanal defteri kendisi seçecek ve o defter 10 işlem kapattıkça sıralamaya yeniden bakacak.\n\nAçık LIVE pozisyonlar kapanmaz.'
+    : 'Otoseçim kapanacak: LIVE şu an seçili olan algoritmada sabit kalacak.';
+  if (!confirm(msg)) return;
+  const r = await fetch(BASE + '/api/live/auto-follow', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({on: next}),
+  });
+  if (r.status === 401) return location.href = BASE + '/giris';
+  if (!r.ok) { alert('Otoseçim değiştirilemedi'); return; }
+  autoOn = next;
+  load();
+};
 async function setLiveFollow(btn){
   if (btn.classList.contains('on')) return;
   const code = btn.dataset.code || btn.dataset.aid;
-  if (!confirm(`LIVE bundan sonra ${code} sanal defterini kopyalayacak.\n\nAçık LIVE pozisyonlar kapanmaz. Yeni açılışlar bu algoritmadan gider.`)) return;
+  if (!confirm(`LIVE bundan sonra ${code} sanal defterini kopyalayacak.\n\nAçık LIVE pozisyonlar kapanmaz. Yeni açılışlar bu algoritmadan gider.\n\nElle seçim otoseçimi kapatır — seçimin sabit kalır.`)) return;
   const r = await fetch(BASE + '/api/algo/' + encodeURIComponent(btn.dataset.aid) + '/live-follow', {method:'POST'});
   if (r.status === 401) return location.href = BASE + '/giris';
   if (!r.ok) { alert('Aktif edilemedi'); return; }
@@ -2091,7 +2161,7 @@ async function setLiveFollow(btn){
 }
 $('mDash').onclick = () => location.href = BASE + '/';
 $('mDesk').onclick = () => location.href = BASE + '/islemler';
-tick(); load(); startStream();
+tick(); if (BOOT && BOOT.ok) paint(BOOT); load(); startStream();
 setInterval(tick, 1000);
 </script></body></html>"""
 
@@ -2143,6 +2213,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
 const BASE = {{ base|tojson }};
 const AID = {{ aid|tojson }};
 const LIVE = {{ live_mode|tojson }};
+const BOOT = {{ boot|tojson }};
 const API = LIVE ? (BASE + '/api/algo/live') : (BASE + '/api/algo/' + encodeURIComponent(AID));
 const $ = id => document.getElementById(id);
 const signed = n => {
@@ -2211,8 +2282,10 @@ function row(h){
   </div>`;
 }
 let busy = false;
+let painted = false;
 function paint(a) {
   if (!a) return;
+  try {
   $('ttl').textContent = LIVE ? 'LIVE' : a.code;
   const src = LIVE ? ((a.follow_code || a.title || '') + ' kopyası') : a.title;
   const sz = LIVE ? '$60×15x · sanal kopya' : '$100x10';
@@ -2255,12 +2328,14 @@ function paint(a) {
       load();
     };
   });
+  painted = true;
+  } catch (e) {}
 }
 async function load(){
   if (busy) return;
   busy = true;
   try {
-    const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(20000)});
+    const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(8000)});
     if (r.status === 401) return location.href = BASE + '/giris';
     if (!r.ok) return;
     paint(await r.json());
@@ -2271,38 +2346,41 @@ $('btog').onclick = async () => {
   await fetch(API + '/toggle', {method:'POST'});
   load();
 };
+if (BOOT && BOOT.ok !== false && (BOOT.positions || BOOT.code)) paint(BOOT);
 load();
-if (LIVE) {
-  const es = new EventSource(BASE + '/api/algo/live/stream');
-  let fails = 0;
-  es.onopen = () => { fails = 0; };
+setInterval(() => { if (!painted) load(); }, 2500);
+const streamUrl = LIVE
+  ? (BASE + '/api/algo/live/stream')
+  : (BASE + '/api/algo/' + encodeURIComponent(AID) + '/stream');
+let es = null, esBackoff = 1000, esPoller = 0, esLast = Date.now();
+const esPollOn = () => { if (!esPoller) esPoller = setInterval(load, 5000); };
+const esPollOff = () => { if (esPoller) { clearInterval(esPoller); esPoller = 0; } };
+function startStream(){
+  try { if (es) es.close(); } catch (e) {}
+  es = new EventSource(streamUrl);
+  es.onopen = () => { esBackoff = 1000; esLast = Date.now(); esPollOff(); };
   es.onmessage = ev => {
-    fails = 0;
+    esLast = Date.now(); esBackoff = 1000; esPollOff();
     try {
       const a = JSON.parse(ev.data);
       if (a && a.ok !== false) paint(a);
     } catch (e) {}
   };
   es.onerror = () => {
-    fails++;
-    if (fails >= 3) setTimeout(() => load(), 5000);
-  };
-} else {
-  const es = new EventSource(BASE + '/api/algo/' + encodeURIComponent(AID) + '/stream');
-  let fails = 0;
-  es.onopen = () => { fails = 0; };
-  es.onmessage = ev => {
-    fails = 0;
-    try {
-      const a = JSON.parse(ev.data);
-      if (a && a.ok !== false) paint(a);
-    } catch (e) {}
-  };
-  es.onerror = () => {
-    fails++;
-    if (fails >= 3) setTimeout(() => load(), 5000);
+    // Sunucu yeniden başlarsa vekil bir an 502 döner; tarayıcı bunu ölümcül sayıp
+    // bağlantıyı kapatır ve kendiliğinden geri dönmez. Yoklamaya geç, sonra tekrar bağlan.
+    esPollOn();
+    if (es && es.readyState === EventSource.CLOSED){
+      setTimeout(startStream, esBackoff);
+      esBackoff = Math.min(esBackoff * 2, 30000);
+    }
   };
 }
+// Bağlantı açık görünüp veri akmıyorsa (takılı vekil) zorla yenile.
+setInterval(() => {
+  if (Date.now() - esLast > 25000){ esLast = Date.now(); esPollOn(); startStream(); }
+}, 5000);
+startStream();
 </script></body></html>"""
 
 LOGIN = r"""<!doctype html><html lang="tr"><head>

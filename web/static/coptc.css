@@ -708,6 +708,9 @@ tr:hover td{background:#1c1c21}
 .alg-live-btn.on{background:rgba(255,77,141,.22);color:var(--pink)}
 .alg-card.wr-best .alg-live-btn{background:rgba(17,20,12,.12);color:var(--lime-ink)}
 .alg-card.wr-best .alg-live-btn.on{background:var(--lime-ink);color:var(--lime)}
+.auto-btn{color:var(--tx);white-space:nowrap}
+.auto-btn.on{background:var(--lime);color:var(--lime-ink);box-shadow:0 6px 18px rgba(193,255,114,.22)}
+.auto-btn.on:hover{background:var(--lime2)}
 .alg-chip{
   padding:4px 9px;border-radius:999px;font-size:10px;font-weight:700;
   background:rgba(255,255,255,.06);color:#d5dae6;

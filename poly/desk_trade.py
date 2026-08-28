@@ -161,12 +161,12 @@ def futures_symbols() -> list[dict]:
         req = urllib.request.Request(
             "https://fapi.binance.com/fapi/v1/exchangeInfo", headers=_BN_HDR
         )
-        with urllib.request.urlopen(req, timeout=12) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             info = json.loads(r.read().decode())
         req2 = urllib.request.Request(
             "https://fapi.binance.com/fapi/v1/ticker/24hr", headers=_BN_HDR
         )
-        with urllib.request.urlopen(req2, timeout=15) as r:
+        with urllib.request.urlopen(req2, timeout=5) as r:
             ticks = json.loads(r.read().decode())
     except Exception:
         return list(_FUT_CACHE["rows"] or [])

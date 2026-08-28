@@ -9,9 +9,11 @@ hiçbir uç noktaya erişilemez.
 """
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import secrets
+import signal
 import sys
 import time
 from functools import wraps
@@ -35,6 +37,12 @@ sys.path.insert(0, _DIR)
 
 import api  # noqa: E402
 import ui_templates  # noqa: E402
+
+# Panel kilitlenirse: kill -USR1 <pid> -> tüm thread yığınları log'a düşer.
+try:
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+except Exception:
+    pass
 
 app = Flask(__name__)
 # .env'de anahtar tanımlı ama boşsa getenv boş string döner; `or` ile yakala,
@@ -119,6 +127,7 @@ def _render(name: str, **ctx):
     ctx.setdefault("base", URL_PREFIX)
     ctx.setdefault("nav_on", "")
     ctx.setdefault("live_mode", False)
+    ctx.setdefault("boot", {})
     return render_template_string(_tpl(name), **ctx)
 
 
@@ -281,13 +290,21 @@ def chart_analiz_page():
 @app.route("/algoritma-islemler")
 @guard
 def algo_list_page():
-    return _render("ALGOS", book=api.active_book())
+    try:
+        boot = api.algo_overview()
+    except Exception:
+        boot = {"ok": False}
+    return _render("ALGOS", book=api.active_book(), boot=boot)
 
 
 @app.route("/algoritma/<aid>")
 @guard
 def algo_detail_page(aid: str):
-    return _render("ALGO_ONE", book=api.active_book(), aid=aid)
+    try:
+        boot = api.algo_detail(aid, fast=True) or {"ok": False}
+    except Exception:
+        boot = {"ok": False}
+    return _render("ALGO_ONE", book=api.active_book(), aid=aid, boot=boot)
 
 
 @app.route("/live")
@@ -300,6 +317,7 @@ def live_squeeze_page():
         aid="squeeze_momentum",
         nav_on="live",
         live_mode=True,
+        boot=api.algo_live_overview(),
     )
 
 
@@ -647,7 +665,7 @@ def api_algo_one_stream(aid: str):
     def gen():
         while True:
             try:
-                payload = json.dumps(api.algo_detail(aid), ensure_ascii=False, default=str)
+                payload = json.dumps(api.algo_detail(aid, fast=True), ensure_ascii=False, default=str)
             except Exception:
                 payload = '{"ok":false}'
             yield f"data: {payload}\n\n"
@@ -693,8 +711,8 @@ def api_algo_live_stream():
     def gen():
         while True:
             try:
-                d = al._live_ov_get()
-                payload = json.dumps(d, ensure_ascii=False, default=str) if d else '{"ok":false}'
+                d = al.overview_fast()
+                payload = json.dumps(d, ensure_ascii=False, default=str, allow_nan=False)
             except Exception:
                 payload = '{"ok":false}'
             yield f"data: {payload}\n\n"
@@ -729,7 +747,7 @@ def api_algo_live_close():
 @app.route("/api/algo/<aid>")
 @guard
 def api_algo_detail(aid: str):
-    row = api.algo_detail(aid)
+    row = api.algo_detail(aid, fast=True)
     if not row:
         return jsonify({"error": "algoritma yok"}), 404
     return jsonify(row)
@@ -751,6 +769,13 @@ def api_algo_live_follow(aid: str):
     if not row:
         return jsonify({"error": "algoritma yok"}), 404
     return jsonify(row)
+
+
+@app.route("/api/live/auto-follow", methods=["POST"])
+@guard
+def api_live_auto_follow():
+    d = request.get_json(silent=True) or {}
+    return jsonify(api.algo_live_auto_follow(bool(d.get("on"))))
 
 
 @app.route("/api/algo/<aid>/close", methods=["POST"])
@@ -818,7 +843,9 @@ def _start_algo_loop():
         if p not in sys.path:
             sys.path.insert(0, p)
         import algo_paper
+        import algo_live
         algo_paper.ensure_started()
+        algo_live.ensure_live_stream_started()
     except Exception as exc:
         print("algo_paper:", exc)
 

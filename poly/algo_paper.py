@@ -80,6 +80,7 @@ _lock = threading.RLock()
 _state: dict | None = None
 _thread: threading.Thread | None = None
 _exit_thread: threading.Thread | None = None
+_marks_thread: threading.Thread | None = None
 _kline_cache: dict[str, tuple[float, object]] = {}
 _px_cache: tuple[float, dict[str, dict]] = (0.0, {})
 _book_cache: dict = {"t": 0.0, "rows": {}}
@@ -138,6 +139,14 @@ def _live_follow_id() -> str:
         return algo_live.follow_aid()
     except Exception:
         return "squeeze_momentum"
+
+
+def _live_auto_on() -> bool:
+    try:
+        import algo_live
+        return algo_live.auto_follow_on()
+    except Exception:
+        return True
 
 
 def _live_has_src(src_id: str) -> bool:
@@ -382,12 +391,12 @@ def _round_step(qty: float, step: float) -> float:
 
 def _book() -> dict[str, dict]:
     now = time.time()
-    if _book_cache["rows"] and now - _book_cache["t"] < 5:
+    if _book_cache["rows"] and now - _book_cache["t"] < 3:
         return _book_cache["rows"]
     out: dict[str, dict] = {}
     try:
-        books = _http(f"{_BN}/fapi/v1/ticker/bookTicker", timeout=15)
-        prem = _http(f"{_BN}/fapi/v1/premiumIndex", timeout=15)
+        books = _http(f"{_BN}/fapi/v1/ticker/bookTicker", timeout=5)
+        prem = _http(f"{_BN}/fapi/v1/premiumIndex", timeout=5)
     except Exception:
         return _book_cache["rows"]
     for r in books or []:
@@ -450,7 +459,7 @@ def _ga_coins() -> list[dict]:
 def _marks() -> dict[str, dict]:
     global _px_cache
     now = time.time()
-    if _px_cache[1] and now - _px_cache[0] < 8:
+    if _px_cache[1] and now - _px_cache[0] < 3:
         return _px_cache[1]
     out: dict[str, dict] = {}
     book = _book()
@@ -660,7 +669,9 @@ def _mark_pos(p: dict, marks: dict[str, dict]) -> dict:
 def _book_view(b: dict, marks: dict[str, dict], with_history: bool = True) -> dict:
     poss = [_mark_pos(p, marks) for p in b.get("positions") or []]
     unreal = sum(p["net"] for p in poss)
-    locked = MARGIN * len(poss)
+    # TP1 sonrası pozisyonun kilitli marjı yarıya düşüyor — sabit MARGIN ile
+    # çarpmak özkaynağı olduğundan yüksek gösteriyordu.
+    locked = sum(float(p.get("margin") or MARGIN) for p in poss)
     equity = round(float(b["cash"]) + locked + unreal, 2)
     raw = b.get("history") or []
     wins = sum(1 for h in raw if float(h.get("net") or 0) > 0)
@@ -675,6 +686,7 @@ def _book_view(b: dict, marks: dict[str, dict], with_history: bool = True) -> di
                 row["closed"] = row.get("t") or ""
             hist.append(row)
     return {
+        "ok": True,
         "id": b["id"],
         "code": b["code"],
         "title": b["title"],
@@ -702,8 +714,9 @@ def overview() -> dict:
     now = time.time()
     if _ov_snap[1] is not None and now - _ov_snap[0] < 2.5:
         return _ov_snap[1]
-    marks = _marks()
+    marks = _px_cache[1] or {}
     follow = _live_follow_id()
+    live_auto = _live_auto_on()
     with _lock:
         _sync_catalog()
         st = _load()
@@ -734,6 +747,7 @@ def overview() -> dict:
         "pending": pending,
         "last_scan": last_scan,
         "live_follow": follow,
+        "live_auto": live_auto,
     }
     _ov_snap = (now, row)
     return row
@@ -749,21 +763,30 @@ def _match_aid(b: dict, key: str) -> bool:
     return k == code
 
 
-def detail(aid: str) -> dict | None:
+def detail(aid: str, fast: bool = False) -> dict | None:
     key = str(aid or "").strip()
     now = time.time()
     hit = _det_snap.get(key)
     if hit and now - hit[0] < 2.0:
         return hit[1]
-    marks = _marks()
-    with _lock:
+    # fast = "Binance'i bekleme", "asla yenileme" değil. Fiyatı `_marks_loop`'un
+    # 8 saniyede tazelediği önbellekten al; defter her çağrıda yeniden okunur.
+    marks = (_px_cache[1] or {}) if fast else _marks()
+    got = _lock.acquire(timeout=0.5)
+    try:
         st = _load()
         b = st["algos"].get(key)
         if not b:
             b = next((row for row in st["algos"].values() if _match_aid(row, key)), None)
         if not b:
-            return None
+            return hit[1] if hit else None
         out = _book_view(b, marks)
+    except RuntimeError:
+        # Kilitsiz okurken defter değiştiyse: eldeki son görüntüyü ver.
+        return hit[1] if hit else None
+    finally:
+        if got:
+            _lock.release()
     _det_snap[key] = (now, out)
     return out
 
@@ -795,11 +818,16 @@ def _close_one(b: dict, pos_id: str, marks: dict, reason: str) -> dict | None:
     fee_close = _fee_on(qty, exit_px)
     fund = float(hit.get("funding_acc") or 0)
     net = gross - fee_open - fee_close + fund
+    # TP1 kısmi kapanış marjın bir kısmını zaten geri vermişti; kalanı
+    # `pos["margin"]` tutuyor. Burada tam MARGIN eklemek defterin nakdini
+    # her kısmi kapanışta bir yarım marj kadar şişiriyordu.
+    margin_back = float(hit.get("margin") or MARGIN)
     if reason == "liquidation":
-        net = min(net, -(MARGIN - 1.0))
+        net = min(net, -(margin_back - 1.0))
     b["positions"] = [p for p in poss if p["id"] != pos_id]
-    b["cash"] = round(float(b["cash"]) + MARGIN + net, 2)
-    b["fees"] = round(float(b.get("fees") or 0) + fee_open + fee_close, 2)
+    b["cash"] = round(float(b["cash"]) + margin_back + net, 2)
+    # fee_open açılışta zaten `fees`e eklenmişti.
+    b["fees"] = round(float(b.get("fees") or 0) + fee_close, 2)
     closed = _ts()
     closed_iso = _iso()
     opened = str(hit.get("opened") or "")
@@ -914,7 +942,9 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None) -> dict | N
         "opened_ms": now_ms,
         "fill": "ask" if side == "LONG" else "bid",
     }
-    b["cash"] = round(float(b["cash"]) - MARGIN - fee, 2)
+    # Açılış komisyonu kapanışta `net` içinde (fee_open) zaten düşülüyor;
+    # burada nakitten ayrıca kesmek onu iki kez saymak olurdu.
+    b["cash"] = round(float(b["cash"]) - MARGIN, 2)
     b["fees"] = round(float(b.get("fees") or 0) + fee, 2)
     b.setdefault("positions", []).append(pos)
     if _follow_open_ok(b):
@@ -1364,8 +1394,19 @@ def _loop() -> None:
         time.sleep(SCAN_SEC)
 
 
+def _marks_loop() -> None:
+    """Fiyatı arka planda yenile — sayfa isteği Binance beklemesin."""
+    time.sleep(1)
+    while True:
+        try:
+            _marks()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(3)
+
+
 def ensure_started() -> None:
-    global _thread, _exit_thread
+    global _thread, _exit_thread, _marks_thread
     with _lock:
         _load()
         if not (_thread and _thread.is_alive()):
@@ -1374,3 +1415,6 @@ def ensure_started() -> None:
         if not (_exit_thread and _exit_thread.is_alive()):
             _exit_thread = threading.Thread(target=_exit_loop, name="algo-exit", daemon=True)
             _exit_thread.start()
+        if not (_marks_thread and _marks_thread.is_alive()):
+            _marks_thread = threading.Thread(target=_marks_loop, name="algo-marks", daemon=True)
+            _marks_thread.start()
