@@ -400,6 +400,16 @@ async function load(){
     $('mdlnote').innerHTML = `<span class="werr">Veri yüklenemedi: ${e.message}</span>`;
   }
 }
+function startStream(){
+  const es = new EventSource(BASE + '/api/overview/stream');
+  let fails = 0;
+  es.onopen = () => { fails = 0; };
+  es.onmessage = ev => {
+    fails = 0;
+    try { const d = JSON.parse(ev.data); if (d && d.models) render(d); } catch(e) {}
+  };
+  es.onerror = () => { fails++; };
+}
 
 function renderCons(d){
   const el = $('cons'); if (!el) return;
@@ -529,8 +539,7 @@ $('posSection').addEventListener('click', e => {
   if (btn) closeOne(btn);
 });
 
-load().then(signals); loadCons();
-setInterval(load, 30000);
+load().then(signals); loadCons(); startStream();
 setInterval(loadCons, 60000);
 </script></body></html>"""
 
@@ -800,6 +809,16 @@ async function load(){
   if (r.status === 401) return location.href = BASE + '/giris';
   render(await r.json());
 }
+function startStream(){
+  const es = new EventSource(BASE + '/api/overview/stream');
+  let fails = 0;
+  es.onopen = () => { fails = 0; };
+  es.onmessage = ev => {
+    fails = 0;
+    try { const d = JSON.parse(ev.data); if (d) render(d); } catch(e) {}
+  };
+  es.onerror = () => { fails++; };
+}
 
 const pick = () => PICK || MIRROR;
 const bookName = k => { const b = ROWS.find(x => x.book === k); return b ? b.short : k; };
@@ -962,7 +981,7 @@ async function signals(){
 }
 $('bref').onclick = () => load();
 $('bsig').onclick = signals;
-load(); loadMirror(); loadWd(); setInterval(loadMirror, 60000); setInterval(load, 30000);
+load(); loadMirror(); loadWd(); startStream(); setInterval(loadMirror, 60000);
 </script></body></html>"""
 
 TRADES = r"""<!doctype html><html lang="tr"><head>
@@ -1216,6 +1235,23 @@ async function loadSnap(){
     drawMkts(); fillSpot(); drawPos(); drawChart();
   } catch(e){}
 }
+function startSnapStream(){
+  const es = new EventSource(BASE + '/api/desk/snapshot/stream');
+  let fails = 0;
+  es.onopen = () => { fails = 0; };
+  es.onmessage = ev => {
+    fails = 0;
+    try {
+      const d = JSON.parse(ev.data);
+      if (!d || d.ok === false) return;
+      snap = d;
+      if (snap.now_tr) $('clock').textContent = snap.now_tr;
+      if (snap.balance != null) $('bal').textContent = money(snap.balance);
+      drawMkts(); fillSpot(); drawPos(); drawChart();
+    } catch(e) {}
+  };
+  es.onerror = () => { fails++; if (fails >= 3) setTimeout(loadSnap, 5000); };
+}
 
 async function loadQuote(){
   const amt = +$('amt').value;
@@ -1442,8 +1478,7 @@ $('mDash').onclick = () => location.href = BASE + '/';
 $('mSet').onclick = () => location.href = BASE + '/ayarlar';
 window.addEventListener('resize', drawChart);
 drawTabs();
-loadSnap(); loadQuote(); loadBars(); loadCons();
-setInterval(loadSnap, 3000);
+loadSnap(); loadQuote(); loadBars(); loadCons(); startSnapStream();
 setInterval(loadQuote, 1000);
 setInterval(loadBars, 10000);
 setInterval(loadCons, 60000);
@@ -2176,14 +2211,8 @@ function row(h){
   </div>`;
 }
 let busy = false;
-async function load(){
-  if (busy) return;
-  busy = true;
-  try {
-  const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(20000)});
-  if (r.status === 401) return location.href = BASE + '/giris';
-  if (!r.ok) return;
-  const a = await r.json();
+function paint(a) {
+  if (!a) return;
   $('ttl').textContent = LIVE ? 'LIVE' : a.code;
   const src = LIVE ? ((a.follow_code || a.title || '') + ' kopyası') : a.title;
   const sz = LIVE ? '$60×15x · sanal kopya' : '$100x10';
@@ -2226,6 +2255,15 @@ async function load(){
       load();
     };
   });
+}
+async function load(){
+  if (busy) return;
+  busy = true;
+  try {
+    const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(20000)});
+    if (r.status === 401) return location.href = BASE + '/giris';
+    if (!r.ok) return;
+    paint(await r.json());
   } catch (e) {}
   finally { busy = false; }
 }
@@ -2234,7 +2272,37 @@ $('btog').onclick = async () => {
   load();
 };
 load();
-setInterval(load, 6000);
+if (LIVE) {
+  const es = new EventSource(BASE + '/api/algo/live/stream');
+  let fails = 0;
+  es.onopen = () => { fails = 0; };
+  es.onmessage = ev => {
+    fails = 0;
+    try {
+      const a = JSON.parse(ev.data);
+      if (a && a.ok !== false) paint(a);
+    } catch (e) {}
+  };
+  es.onerror = () => {
+    fails++;
+    if (fails >= 3) setTimeout(() => load(), 5000);
+  };
+} else {
+  const es = new EventSource(BASE + '/api/algo/' + encodeURIComponent(AID) + '/stream');
+  let fails = 0;
+  es.onopen = () => { fails = 0; };
+  es.onmessage = ev => {
+    fails = 0;
+    try {
+      const a = JSON.parse(ev.data);
+      if (a && a.ok !== false) paint(a);
+    } catch (e) {}
+  };
+  es.onerror = () => {
+    fails++;
+    if (fails >= 3) setTimeout(() => load(), 5000);
+  };
+}
 </script></body></html>"""
 
 LOGIN = r"""<!doctype html><html lang="tr"><head>

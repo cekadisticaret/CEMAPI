@@ -602,6 +602,63 @@ def api_algo_overview():
     return jsonify(api.algo_overview())
 
 
+@app.route("/api/overview/stream")
+@guard
+def api_overview_stream():
+    """Ana dashboard + Ayarlar: HTTP poll yerine sunucu iter."""
+    def gen():
+        while True:
+            try:
+                payload = json.dumps(api.overview(api.active_book()), ensure_ascii=False, default=str)
+            except Exception:
+                payload = '{"ok":false}'
+            yield f"data: {payload}\n\n"
+            time.sleep(3)
+    resp = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "keep-alive"
+    return resp
+
+
+@app.route("/api/desk/snapshot/stream")
+@guard
+def api_desk_snapshot_stream():
+    """İşlemler sayfası: masaüstü anlık snapshot."""
+    def gen():
+        while True:
+            try:
+                payload = json.dumps(api.desk_snapshot(60), ensure_ascii=False, default=str)
+            except Exception:
+                payload = '{"ok":false}'
+            yield f"data: {payload}\n\n"
+            time.sleep(3)
+    resp = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "keep-alive"
+    return resp
+
+
+@app.route("/api/algo/<aid>/stream")
+@guard
+def api_algo_one_stream(aid: str):
+    """Tekil algoritma sayfası: HTTP poll yerine sunucu iter."""
+    def gen():
+        while True:
+            try:
+                payload = json.dumps(api.algo_detail(aid), ensure_ascii=False, default=str)
+            except Exception:
+                payload = '{"ok":false}'
+            yield f"data: {payload}\n\n"
+            time.sleep(3)
+    resp = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "keep-alive"
+    return resp
+
+
 @app.route("/api/algo/overview/stream")
 @guard
 def api_algo_overview_stream():
@@ -625,6 +682,28 @@ def api_algo_overview_stream():
 @guard
 def api_algo_live():
     return jsonify(api.algo_live_overview())
+
+
+@app.route("/api/algo/live/stream")
+@guard
+def api_algo_live_stream():
+    """Live sayfası: HTTP poll yerine sunucu iter."""
+    import algo_live as al
+    al.ensure_live_stream_started()
+    def gen():
+        while True:
+            try:
+                d = al._live_ov_get()
+                payload = json.dumps(d, ensure_ascii=False, default=str) if d else '{"ok":false}'
+            except Exception:
+                payload = '{"ok":false}'
+            yield f"data: {payload}\n\n"
+            time.sleep(3)
+    resp = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "keep-alive"
+    return resp
 
 
 @app.route("/api/algo/live/wallet")

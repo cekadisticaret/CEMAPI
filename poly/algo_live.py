@@ -79,6 +79,43 @@ _dual: bool | None = None
 _wallet_cache: dict = {"t": 0.0, "row": {}}
 _bn_opens_cache: dict = {"t": 0.0, "row": None}
 _ov_snap: tuple[float, dict | None] = (0.0, None)
+_live_ov_cache: dict = {"t": 0.0, "data": None}
+
+
+def _live_ov_refresh() -> None:
+    """Arkaplanda her 3 sn'de bir overview hesapla — SSE bloke olmasın."""
+    import time as _time
+    _time.sleep(1)
+    while True:
+        try:
+            result = overview()
+            _live_ov_cache["data"] = result
+            _live_ov_cache["t"] = _time.time()
+        except Exception:
+            pass
+        _time.sleep(3)
+
+
+def _live_ov_get() -> dict | None:
+    """Son hesaplanan overview'i döndür; yoksa bekle."""
+    import time as _time
+    deadline = _time.time() + 20
+    while _time.time() < deadline:
+        if _live_ov_cache["data"] is not None:
+            return _live_ov_cache["data"]
+        _time.sleep(0.2)
+    return None
+
+
+_live_ov_thread: threading.Thread | None = None
+
+
+def ensure_live_stream_started() -> None:
+    global _live_ov_thread
+    if _live_ov_thread and _live_ov_thread.is_alive():
+        return
+    _live_ov_thread = threading.Thread(target=_live_ov_refresh, name="live-ov-bg", daemon=True)
+    _live_ov_thread.start()
 
 
 def _now() -> datetime:
