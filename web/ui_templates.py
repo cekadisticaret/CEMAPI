@@ -1988,6 +1988,11 @@ ALGOS = r"""<!doctype html><html lang="tr"><head>
     <div class="alg-wrap">
       <div class="alg-grid" id="grid"></div>
       <aside class="alg-side">
+        <div class="alg-side-hd alg-side-hd-row">
+          <span id="loseHd">EN ÇOK ZARAR EDEN</span>
+          <button type="button" class="btn btn-sm" id="pnlBtn">Kâr</button>
+        </div>
+        <div class="alg-pend" id="losers"></div>
         <div class="alg-side-hd" id="pendHd">İŞLEM BEKLEYEN</div>
         <div class="alg-pend" id="pend"></div>
       </aside>
@@ -2009,6 +2014,23 @@ const signed = n => {
   return `<span class="${v>0?'up':v<0?'dn':''}">${t}</span>`;
 };
 function tick(){ $('clock').textContent = new Date().toLocaleTimeString('tr-TR'); }
+let showWin = false;
+const lastPnl = {losers: [], winners: []};
+function paintPnl(){
+  const rows = showWin ? lastPnl.winners : lastPnl.losers;
+  const hd = $('loseHd');
+  const btn = $('pnlBtn');
+  if (hd) hd.textContent = (showWin ? 'EN ÇOK KÂR EDEN' : 'EN ÇOK ZARAR EDEN') + ' — ' + rows.length + ' COİN';
+  if (btn) btn.textContent = showWin ? 'Zarar' : 'Kâr';
+  const box = $('losers');
+  if (!box) return;
+  const empty = showWin ? 'Kâr eden coin yok' : 'Zarar eden coin yok';
+  box.innerHTML = rows.map(c => `<div class="alg-pend-row">
+    <b>${c.base}</b>
+    <span class="mut">${c.trades||0} işlem · WR ${(c.win_pct||0).toFixed(0)}%</span>
+    <span class="alg-dir ${c.net>=0?'up':'dn'}">${signed(c.net)}</span>
+  </div>`).join('') || `<div class="mut" style="padding:10px">${empty}</div>`;
+}
 function bestWrId(rows){
   const ok = (rows||[]).filter(a => (a.trades||0) > 0);
   if (!ok.length) return '';
@@ -2070,6 +2092,9 @@ function paint(d){
   const follow = d.live_follow || '';
   paintAuto(d.live_auto !== false, rows, follow);
   $('grid').innerHTML = rows.map((a,i) => card(a, a.id===top, i, a.id===follow)).join('') || '<div class="mut">ALG klasörü boş</div>';
+  lastPnl.losers = d.losers||[];
+  lastPnl.winners = d.winners||[];
+  paintPnl();
   const pend = d.pending||[];
   $('pendHd').textContent = 'İŞLEM BEKLEYEN — ' + pend.length + ' SİNYAL — ' + (d.coin_n||0) + ' COİN (Grafik Analiz)';
   $('pend').innerHTML = pend.map(p => `<div class="alg-pend-row">
@@ -2161,6 +2186,7 @@ async function setLiveFollow(btn){
 }
 $('mDash').onclick = () => location.href = BASE + '/';
 $('mDesk').onclick = () => location.href = BASE + '/islemler';
+$('pnlBtn').onclick = () => { showWin = !showWin; paintPnl(); };
 tick(); if (BOOT && BOOT.ok) paint(BOOT); load(); startStream();
 setInterval(tick, 1000);
 </script></body></html>"""
@@ -2179,7 +2205,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
     </div>
     <nav class="nav">""" + _ALG_NAV + r"""
     </nav>
-    <div class="sidebar-foot">{% if live_mode %}<b>Gerçek Binance</b>$60 × 15x · seçilen sanal algoritmanın kopyası.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
+    <div class="sidebar-foot">{% if live_mode %}<b>Gerçek Binance</b>$50 × 15x · kâr WR≥60 → $60 × 20x.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
   </aside>
   <div class="main alg-page">
     <header class="topbar">
@@ -2288,7 +2314,11 @@ function paint(a) {
   try {
   $('ttl').textContent = LIVE ? 'LIVE' : a.code;
   const src = LIVE ? ((a.follow_code || a.title || '') + ' kopyası') : a.title;
-  const sz = LIVE ? '$60×15x · sanal kopya' : '$100x10';
+  const m = Number(a.margin || (LIVE ? 50 : 100));
+  const lv = Number(a.lev || (LIVE ? 15 : 10));
+  const sz = LIVE
+    ? `$${m.toFixed(0)}×${lv}x · kâr WR≥${Number(a.boost_wr||60)} → $${Number(a.boost_margin||60)}×${Number(a.boost_lev||20)}x`
+    : `$${m.toFixed(0)}x${lv}`;
   $('sub').textContent = `${src} — Win % ${a.win_pct} — ${a.trades} işlem — ${sz} — max: 6${a.error?' — '+a.error:''}`;
   if (LIVE && $('liveUsdt')) {
     $('liveUsdt').textContent = '$' + Number(a.wallet||0).toFixed(2);

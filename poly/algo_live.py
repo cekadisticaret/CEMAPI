@@ -31,6 +31,8 @@ AID = "squeeze_momentum"
 MARGIN = 50.0
 LEV = 15
 LEV_FALLBACK = 10
+BOOST_MARGIN = 60.0
+BOOST_LEV = 20
 NOTIONAL = MARGIN * LEV
 MAX_POS = 6
 _lev_ok: dict[str, int] = {}
@@ -918,6 +920,9 @@ def _overview_row(b: dict, marks: dict, w: dict) -> dict:
         "last_scan": b.get("last_scan") or "",
         "margin": MARGIN,
         "lev": LEV,
+        "boost_margin": BOOST_MARGIN,
+        "boost_lev": BOOST_LEV,
+        "boost_wr": paper._BOOST_WR,
     }
 
 
@@ -1080,6 +1085,8 @@ def close_pos(pos_id: str, reason: str = "manuel") -> tuple[dict, int]:
 
 
 def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None, src_id: str = "", src: dict | None = None) -> dict | None:
+    if paper._blocked(symbol):
+        return None
     if not b.get("active"):
         return None
     if not fapi.enabled():
@@ -1097,12 +1104,21 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None, src_id: str
     px = paper._round_tick(paper._fill_px(side, "open", info), tick)
     if px <= 0:
         return None
+    boost = paper.live_boost(symbol)
+    margin = BOOST_MARGIN if boost else MARGIN
+    want_lev = BOOST_LEV if boost else LEV
     try:
-        lev = _ensure_lev(symbol)
+        mx = int(fapi.max_leverage(symbol) or 0)
+    except Exception:
+        mx = 0
+    if mx > 0:
+        want_lev = min(want_lev, mx)
+    try:
+        lev = _ensure_lev(symbol, want_lev)
     except Exception as e:
         b["error"] = str(e)[:160]
         return None
-    notional = MARGIN * lev
+    notional = margin * lev
     r_dist = 0.0
     if src:
         atr = float(src.get("atr") or 0)
@@ -1135,7 +1151,7 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None, src_id: str
     # force=True her açılışta ekstra bir imzalı çağrı demekti; 4 sn'lik önbellek
     # bu güvenlik kontrolü için yeterli. Marj gerçekten yetmezse Binance reddediyor.
     w = wallet()
-    if not w.get("ok") or float(w.get("available") or 0) < MARGIN * 1.05:
+    if not w.get("ok") or float(w.get("available") or 0) < margin * 1.05:
         b["error"] = "USDT yetersiz"
         return None
     t_order = time.time()
@@ -1165,7 +1181,7 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None, src_id: str
         "mark": fill_px,
         "qty": fill_qty,
         "qty_orig": fill_qty,
-        "margin": MARGIN,
+        "margin": margin,
         "lev": lev,
         "atr": atr,
         "atrp": round(ap, 2),

@@ -67,6 +67,12 @@ _NO_AUTO = {
     "multi_timeframe", "fear_greed_index", "lstm_predictor",
     "random_forest_predictor", "grid_bot", "hmm_regime_detector",
 }
+# Yeni işlem açılmaz; açık pozisyonlar kendi stop'uyla kapanır.
+_SKIP_COINS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+_SKIP_LOSER_N = 5
+_BOOST_WR = 60.0
+_loser_skip: set[str] = set()
+_boost_syms: set[str] = set()
 _FALLBACK_COINS = (
     "SOLUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT",
     "LINKUSDT", "DOTUSDT", "LTCUSDT", "ATOMUSDT", "NEARUSDT",
@@ -490,8 +496,40 @@ def _marks() -> dict[str, dict]:
     return out or _px_cache[1]
 
 
+def skip_coins() -> set[str]:
+    """Elle kapatılanlar + anlık en zararlı N coin."""
+    return set(_SKIP_COINS) | set(_loser_skip)
+
+
+def _blocked(symbol: str) -> bool:
+    return str(symbol or "") in skip_coins()
+
+
+def _refresh_loser_skip(books: list) -> None:
+    global _loser_skip, _boost_syms
+    _loser_skip = {r["symbol"] for r in _coin_losers(books, limit=_SKIP_LOSER_N)}
+    _boost_syms = {
+        r["symbol"] for r in _coin_winners(books)
+        if float(r.get("win_pct") or 0) >= _BOOST_WR
+    }
+
+
+def live_boost(symbol: str) -> bool:
+    """Kâr listesinde ve WR ≥ %60 — live $60×20x açar."""
+    if not _boost_syms and _state:
+        try:
+            _refresh_loser_skip(list((_state.get("algos") or {}).values()))
+        except Exception:
+            pass
+    return str(symbol or "") in _boost_syms
+
+
 def _coin_universe(_marks: dict[str, dict] | None = None) -> list[str]:
-    return [str(r["symbol"]) for r in _ga_coins() if r.get("symbol")]
+    return [
+        str(r["symbol"])
+        for r in _ga_coins()
+        if r.get("symbol") and not _blocked(str(r["symbol"]))
+    ]
 
 
 def _klines(symbol: str):
@@ -709,6 +747,54 @@ def _book_view(b: dict, marks: dict[str, dict], with_history: bool = True) -> di
     }
 
 
+def _coin_stats(books: list) -> list[dict]:
+    """Tüm sanal defterlerde kapanmış işlemlerin coin bazında neti."""
+    agg: dict[str, dict] = {}
+    for b in books:
+        for h in b.get("history") or []:
+            sym = str(h.get("symbol") or "")
+            if not sym:
+                continue
+            row = agg.get(sym)
+            if row is None:
+                row = {
+                    "symbol": sym,
+                    "base": str(h.get("base") or sym.replace("USDT", "")),
+                    "net": 0.0,
+                    "trades": 0,
+                    "wins": 0,
+                }
+                agg[sym] = row
+            net = float(h.get("net") or 0)
+            row["net"] += net
+            row["trades"] += 1
+            if net > 0:
+                row["wins"] += 1
+    out = []
+    for row in agg.values():
+        n = row["trades"]
+        out.append({
+            "symbol": row["symbol"],
+            "base": row["base"],
+            "net": round(row["net"], 2),
+            "trades": n,
+            "win_pct": round(100.0 * row["wins"] / n, 1) if n else 0.0,
+        })
+    return out
+
+
+def _coin_losers(books: list, limit: int = 0) -> list[dict]:
+    out = [r for r in _coin_stats(books) if r["net"] < 0]
+    out.sort(key=lambda x: x["net"])
+    return out[:limit] if limit else out
+
+
+def _coin_winners(books: list) -> list[dict]:
+    out = [r for r in _coin_stats(books) if r["net"] > 0]
+    out.sort(key=lambda x: -x["net"])
+    return out
+
+
 def overview() -> dict:
     global _ov_snap
     now = time.time()
@@ -720,8 +806,15 @@ def overview() -> dict:
     with _lock:
         _sync_catalog()
         st = _load()
-        cards = [_book_view(b, marks, with_history=False) for b in st["algos"].values()]
-        pending = list(st.get("pending") or [])
+        books = list(st["algos"].values())
+        cards = [_book_view(b, marks, with_history=False) for b in books]
+        losers = _coin_losers(books)
+        winners = _coin_winners(books)
+        _refresh_loser_skip(books)
+        pending = [
+            p for p in (st.get("pending") or [])
+            if not _blocked(str(p.get("symbol") or ""))
+        ]
         last_scan = st.get("last_scan") or ""
     cards.sort(key=lambda x: (-float(x.get("equity") or 0), x["code"]))
     net = sum(c["net_pnl"] for c in cards)
@@ -745,6 +838,8 @@ def overview() -> dict:
         "open_n": opens,
         "algos": cards,
         "pending": pending,
+        "losers": losers,
+        "winners": winners,
         "last_scan": last_scan,
         "live_follow": follow,
         "live_auto": live_auto,
@@ -877,6 +972,8 @@ def close_pos(aid: str, pos_id: str, reason: str = "manuel") -> tuple[dict, int]
 
 
 def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None) -> dict | None:
+    if _blocked(symbol):
+        return None
     if not b.get("active") or not b.get("auto"):
         return None
     if len(b.get("positions") or []) >= MAX_POS:
@@ -1276,6 +1373,7 @@ def _scan_once() -> None:
     with _lock:
         _sync_catalog()
         st = _load()
+        _refresh_loser_skip(list(st["algos"].values()))
         auto = [b for b in st["algos"].values() if b.get("active") and b.get("auto")]
         for b in st["algos"].values():
             for p in list(b.get("positions") or []):
@@ -1328,7 +1426,7 @@ def _scan_once() -> None:
                 continue
             held = {p["symbol"] for p in b.get("positions") or []}
             for qv, sym, side, desc, chg in hits:
-                if sym in held:
+                if _blocked(sym) or sym in held:
                     continue
                 if len(held) >= MAX_POS:
                     pending.append({
