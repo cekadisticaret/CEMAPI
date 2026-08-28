@@ -69,7 +69,7 @@ _NO_AUTO = {
 }
 # Yeni işlem açılmaz; açık pozisyonlar kendi stop'uyla kapanır.
 _SKIP_COINS = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
-_SKIP_LOSER_N = 5
+_SKIP_LOSER_N = 10
 _BOOST_WR = 60.0
 _loser_skip: set[str] = set()
 _boost_syms: set[str] = set()
