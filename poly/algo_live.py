@@ -77,6 +77,7 @@ _lock = threading.RLock()
 _state: dict | None = None
 _dual: bool | None = None
 _wallet_cache: dict = {"t": 0.0, "row": {}}
+_bn_opens_cache: dict = {"t": 0.0, "row": None}
 _ov_snap: tuple[float, dict | None] = (0.0, None)
 
 
@@ -297,6 +298,9 @@ def _meta() -> dict | None:
 
 def _bn_opens() -> dict[str, dict] | None:
     """None = okunamadı (pozisyonları silme). {} = gerçekten açık yok."""
+    now = time.time()
+    if _bn_opens_cache["row"] is not None and now - _bn_opens_cache["t"] < 5:
+        return _bn_opens_cache["row"]
     try:
         rows = fapi.position_risk()
     except Exception:
@@ -315,6 +319,8 @@ def _bn_opens() -> dict[str, dict] | None:
         if not sym:
             continue
         out[sym] = r
+    _bn_opens_cache["t"] = now
+    _bn_opens_cache["row"] = out
     return out
 
 
@@ -618,6 +624,21 @@ def _step_trailer(lp: dict) -> ATRStepTrailingStop:
     return t
 
 
+def _maybe_stop_close(b: dict, lp: dict, marks: dict) -> bool:
+    """Son fiyat / bid-ask stopu deldiyse Binance'te kapat. Paper kapanmasını bekleme."""
+    info = marks.get(str(lp.get("symbol") or "")) or {}
+    last = float(info.get("price") or info.get("mark") or 0)
+    if last > 0:
+        lp["mark"] = last
+    mk = float(lp.get("mark") or info.get("mark") or last)
+    px = paper._px_for_stop(lp, info, mk)
+    why = paper._hit_exit(lp, px)
+    if not why:
+        return False
+    _flush_symbol(b, str(lp.get("symbol") or ""), why, str(lp.get("src_id") or ""))
+    return True
+
+
 def _sync_step_trail(lp: dict) -> None:
     """Zarar SL durur. 0.5×ATR kârda girise kilit, sonra 1×ATR trail → Binance STOP."""
     mark = float(lp.get("mark") or 0)
@@ -636,6 +657,15 @@ def _sync_step_trail(lp: dict) -> None:
         from atr_sistem import lock_stop
         ext = float(lp["peak"] if lp["side"] == "LONG" else lp["trough"])
         locked = lock_stop(str(lp["side"]), entry, ext, atr)
+        # Peak kârın %85'ini koru
+        qty = float(lp.get("qty") or 0)
+        if qty > 0 and profit * qty >= 5.0:
+            if lp["side"] == "LONG":
+                pct_sl = entry + (ext - entry) * 0.85
+                locked = max(locked, pct_sl)
+            else:
+                pct_sl = entry - (entry - ext) * 0.85
+                locked = min(locked, pct_sl)
         if lp["side"] == "LONG":
             lp["sl"] = max(float(lp.get("sl") or 0), locked)
         else:
@@ -685,6 +715,7 @@ def overview() -> dict:
                     lp["src_id"] = src.get("id")
                     lp["src_aid"] = follow
                     _copy_paper_atr(lp, src)
+                    _maybe_stop_close(b, lp, marks)
             _save()
         except Exception:
             pass
@@ -1173,7 +1204,13 @@ def on_scan(frames: dict, marks: dict) -> None:
                     lp["src_aid"] = follow
             if src and str(lp.get("symbol") or "") not in want_close:
                 _copy_paper_atr(lp, src)
+                info = marks.get(str(lp.get("symbol") or "")) or {}
+                last = float(info.get("price") or info.get("mark") or 0)
+                if last > 0:
+                    lp["mark"] = last
                 _sync_step_trail(lp)
+                if _maybe_stop_close(b, lp, marks):
+                    continue
                 continue
             _queue_close(b, str(lp.get("symbol") or ""), "paper_close", str(lp.get("src_id") or ""))
             _flush_symbol(b, str(lp.get("symbol") or ""), "paper_close", str(lp.get("src_id") or ""))

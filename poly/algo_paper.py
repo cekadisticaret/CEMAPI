@@ -79,6 +79,7 @@ _FALLBACK_COINS = (
 _lock = threading.RLock()
 _state: dict | None = None
 _thread: threading.Thread | None = None
+_exit_thread: threading.Thread | None = None
 _kline_cache: dict[str, tuple[float, object]] = {}
 _px_cache: tuple[float, dict[str, dict]] = (0.0, {})
 _book_cache: dict = {"t": 0.0, "rows": {}}
@@ -936,14 +937,29 @@ def _refresh_trail(p: dict, mark: float, df=None) -> None:
         if peak - entry >= need:
             p["trail_on"] = True
         if p.get("trail_on"):
-            p["sl"] = max(float(p["sl"]), lock_stop("LONG", entry, peak, atr))
+            atr_sl = lock_stop("LONG", entry, peak, atr)
+            # Peak kârın %75'ini koru — ATR boşluk büyük olsa bile
+            qty = _qty_of(p)
+            if qty > 0:
+                peak_profit = (peak - entry) * qty
+                if peak_profit >= 5.0:
+                    pct_sl = entry + (peak - entry) * 0.85
+                    atr_sl = max(atr_sl, pct_sl)
+            p["sl"] = max(float(p["sl"]), atr_sl)
     else:
         trough = min(float(p.get("trough") or entry), mark)
         p["trough"] = trough
         if entry - trough >= need:
             p["trail_on"] = True
         if p.get("trail_on"):
-            p["sl"] = min(float(p["sl"]), lock_stop("SHORT", entry, trough, atr))
+            atr_sl = lock_stop("SHORT", entry, trough, atr)
+            qty = _qty_of(p)
+            if qty > 0:
+                peak_profit = (entry - trough) * qty
+                if peak_profit >= 5.0:
+                    pct_sl = entry - (entry - trough) * 0.85
+                    atr_sl = min(atr_sl, pct_sl)
+            p["sl"] = min(float(p["sl"]), atr_sl)
     if p.get("trail_on"):
         _note_lock(p)
 
@@ -967,6 +983,18 @@ def _note_lock(p: dict) -> None:
     log.append({"n": len(log) + 1, "usd": usd})
     if len(log) > 12:
         del log[:-12]
+
+
+def _px_for_stop(p: dict, info: dict, mark: float) -> float:
+    """Stop için son fiyat + bid/ask. Mark Price gecikince kilit kaçmasın."""
+    last = float(info.get("price") or 0)
+    bid = float(info.get("bid") or 0)
+    ask = float(info.get("ask") or 0)
+    if p["side"] == "LONG":
+        cands = [x for x in (mark, last, bid) if x > 0]
+        return min(cands) if cands else mark
+    cands = [x for x in (mark, last, ask) if x > 0]
+    return max(cands) if cands else mark
 
 
 def _hit_exit(p: dict, mark: float) -> str | None:
@@ -1226,12 +1254,15 @@ def _scan_once() -> None:
                 mk = float(info.get("mark") or info.get("price") or 0)
                 if mk <= 0:
                     continue
+                last = float(info.get("price") or mk)
+                if last > 0:
+                    p["mark"] = last
                 _apply_funding(p, info)
                 cached = _kline_cache.get(p["symbol"])
                 df = cached[1] if cached else None
                 if p.get("atr") or p.get("r_dist"):
                     _refresh_trail(p, mk, df)
-                why = _hit_exit(p, mk)
+                why = _hit_exit(p, _px_for_stop(p, info, mk))
                 if why:
                     _close_one(b, p["id"], marks, why)
         _save()
@@ -1292,6 +1323,37 @@ def _scan_once() -> None:
         traceback.print_exc()
 
 
+def _exit_loop() -> None:
+    """Trail açık pozisyonlar için 5 sn'de bir hızlı stop taraması."""
+    time.sleep(3)
+    while True:
+        try:
+            marks = _marks()
+            if marks:
+                with _lock:
+                    st = _load()
+                    changed = False
+                    for b in st["algos"].values():
+                        for p in list(b.get("positions") or []):
+                            info = marks.get(p["symbol"]) or {}
+                            mk = float(info.get("mark") or info.get("price") or 0)
+                            if mk <= 0:
+                                continue
+                            last = float(info.get("price") or mk)
+                            if last > 0:
+                                p["mark"] = last
+                            _refresh_trail(p, mk)
+                            why = _hit_exit(p, _px_for_stop(p, info, mk))
+                            if why:
+                                _close_one(b, p["id"], marks, why)
+                                changed = True
+                    if changed:
+                        _save()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(5)
+
+
 def _loop() -> None:
     time.sleep(2)
     while True:
@@ -1303,10 +1365,12 @@ def _loop() -> None:
 
 
 def ensure_started() -> None:
-    global _thread
+    global _thread, _exit_thread
     with _lock:
         _load()
-        if _thread and _thread.is_alive():
-            return
-        _thread = threading.Thread(target=_loop, name="algo-paper", daemon=True)
-        _thread.start()
+        if not (_thread and _thread.is_alive()):
+            _thread = threading.Thread(target=_loop, name="algo-paper", daemon=True)
+            _thread.start()
+        if not (_exit_thread and _exit_thread.is_alive()):
+            _exit_thread = threading.Thread(target=_exit_loop, name="algo-exit", daemon=True)
+            _exit_thread.start()

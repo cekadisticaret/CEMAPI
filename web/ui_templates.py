@@ -1994,15 +1994,8 @@ function card(a, best, i, liveOn){
     </div>
   </div>`;
 }
-let busy = false;
-async function load(){
-  if (busy) return;
-  busy = true;
-  try {
-  const r = await fetch(BASE + '/api/algo/overview', {cache:'no-store', signal: AbortSignal.timeout(8000)});
-  if (r.status === 401) return location.href = BASE + '/giris';
-  if (!r.ok) return;
-  const d = await r.json();
+function paint(d){
+  if (!d || !d.ok) return;
   $('sub').textContent = d.subtitle || '';
   $('topstat').innerHTML = `Net P&L ${signed(d.net_pnl)} · kom. ${signed(-Math.abs(d.fees||0))} · Açık: ${d.open_n||0}`;
   const rows = (d.algos||[]).slice().sort((a,b)=> (b.equity||0)-(a.equity||0));
@@ -2011,13 +2004,40 @@ async function load(){
   $('grid').innerHTML = rows.map((a,i) => card(a, a.id===top, i, a.id===follow)).join('') || '<div class="mut">ALG klasörü boş</div>';
   const pend = d.pending||[];
   $('pendHd').textContent = 'İŞLEM BEKLEYEN — ' + pend.length + ' SİNYAL — ' + (d.coin_n||0) + ' COİN (Grafik Analiz)';
-    $('pend').innerHTML = pend.map(p => `<div class="alg-pend-row">
+  $('pend').innerHTML = pend.map(p => `<div class="alg-pend-row">
     <b>${p.base}</b>
     <span class="mut">${p.note||''}</span>
     <span class="alg-dir ${p.side==='LONG'?'up':'dn'}">${p.side==='LONG'?'çıkar':'düşer'}</span>
   </div>`).join('') || '<div class="mut" style="padding:10px">Tarama bekleniyor…</div>';
+}
+let busy = false;
+let poller = 0;
+async function load(){
+  if (busy) return;
+  busy = true;
+  try {
+  const r = await fetch(BASE + '/api/algo/overview', {cache:'no-store', signal: AbortSignal.timeout(8000)});
+  if (r.status === 401) return location.href = BASE + '/giris';
+  if (!r.ok) return;
+  paint(await r.json());
   } catch (e) {}
   finally { busy = false; }
+}
+function startStream(){
+  const es = new EventSource(BASE + '/api/algo/overview/stream');
+  let fails = 0;
+  es.onopen = () => {
+    fails = 0;
+    if (poller) { clearInterval(poller); poller = 0; }
+  };
+  es.onmessage = ev => {
+    fails = 0;
+    try { paint(JSON.parse(ev.data)); } catch (e) {}
+  };
+  es.onerror = () => {
+    fails++;
+    if (fails >= 3 && !poller) poller = setInterval(load, 8000);
+  };
 }
 $('grid').onclick = e => {
   const btn = e.target.closest('.alg-live-btn');
@@ -2036,9 +2056,8 @@ async function setLiveFollow(btn){
 }
 $('mDash').onclick = () => location.href = BASE + '/';
 $('mDesk').onclick = () => location.href = BASE + '/islemler';
-tick(); load();
+tick(); load(); startStream();
 setInterval(tick, 1000);
-setInterval(load, 8000);
 </script></body></html>"""
 
 ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
@@ -2161,7 +2180,7 @@ async function load(){
   if (busy) return;
   busy = true;
   try {
-  const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(10000)});
+  const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(20000)});
   if (r.status === 401) return location.href = BASE + '/giris';
   if (!r.ok) return;
   const a = await r.json();

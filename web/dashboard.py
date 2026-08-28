@@ -9,12 +9,25 @@ hiçbir uç noktaya erişilemez.
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sys
+import time
 from functools import wraps
 
-from flask import Flask, jsonify, redirect, render_template_string, request, send_file, send_from_directory, session
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template_string,
+    request,
+    send_file,
+    send_from_directory,
+    session,
+    stream_with_context,
+)
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _STATIC = os.path.join(_DIR, "static")
@@ -27,6 +40,7 @@ app = Flask(__name__)
 # .env'de anahtar tanımlı ama boşsa getenv boş string döner; `or` ile yakala,
 # yoksa Flask "no secret key" diye oturumu tamamen reddediyor.
 app.secret_key = os.getenv("COPTC_SECRET") or secrets.token_hex(16)
+app.permanent_session_lifetime = __import__("datetime").timedelta(days=30)
 PASSWORD = (os.getenv("COPTC_PASSWORD") or "").strip()
 ALG_API_TOKEN = (os.getenv("ALG_API_TOKEN") or "").strip()
 PORT = int(os.getenv("COPTC_PORT") or 5060)
@@ -162,6 +176,7 @@ def login():
     if request.method == "POST":
         if secrets.compare_digest(request.form.get("p", ""), PASSWORD):
             session["ok"] = True
+            session.permanent = True
             return redirect(_url("/"))
         err = True
     return render_template_string(
@@ -585,6 +600,25 @@ def api_v1_live():
 @guard
 def api_algo_overview():
     return jsonify(api.algo_overview())
+
+
+@app.route("/api/algo/overview/stream")
+@guard
+def api_algo_overview_stream():
+    """Liste sayfası: HTTP poll yerine sunucu iter. Algoritma taramasına dokunmaz."""
+    def gen():
+        while True:
+            try:
+                payload = json.dumps(api.algo_overview(), ensure_ascii=False, default=str)
+            except Exception:
+                payload = '{"ok":false}'
+            yield f"data: {payload}\n\n"
+            time.sleep(2.5)
+    resp = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "keep-alive"
+    return resp
 
 
 @app.route("/api/algo/live")
