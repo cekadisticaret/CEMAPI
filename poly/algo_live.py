@@ -1,11 +1,12 @@
-"""LIVE Squeeze Momentum — sanal ile aynı sinyal/ATR, gerçek Binance Futures.
+"""LIVE — seçilen sanal algoritmanın kopyası, gerçek Binance Futures.
 
-$30 marj × 10x. Sanal squeeze_momentum defterine dokunmaz.
+$60 marj × 15x. Sanal deftere dokunmaz. Varsayılan kaynak: squeeze_momentum.
 """
 from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import traceback
@@ -17,19 +18,66 @@ import binance_fapi as fapi
 from atr_sistem import ATRP_NO_TRADE, ATR_SL_MULT, atr_last, atrp as _atrp, levels as _atr_levels, sl_clears_liq, trail_stop
 import algo_paper as paper
 
+_AI = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "AI"))
+if _AI not in sys.path:
+    sys.path.insert(0, _AI)
+from atr_step_trailing_stop import ATRStepTrailingStop
+
 _TZ = ZoneInfo("Europe/Istanbul")
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _STATE = os.path.join(_DIR, "algo_live_state.json")
+_FOLLOW = os.path.join(_DIR, "algo_live_follow.json")
 AID = "squeeze_momentum"
-MARGIN = 30.0
-LEV = 10
+MARGIN = 60.0
+LEV = 15
+LEV_FALLBACK = 10
 NOTIONAL = MARGIN * LEV
 MAX_POS = 6
+_lev_ok: dict[str, int] = {}
+
+
+def _liq_px(side: str, entry: float, lev: int | None = None) -> float:
+    lv = int(lev or LEV)
+    if lv <= 0:
+        lv = LEV
+    if side == "LONG":
+        return entry * (1.0 - 1.0 / lv + paper.MMR)
+    return entry * (1.0 + 1.0 / lv - paper.MMR)
+
+
+def _ensure_lev(symbol: str, want: int | None = None, *, required: bool = True) -> int:
+    """15x mümkünse 15, değilse 10 (daha düşük tavan varsa tavan)."""
+    if symbol in _lev_ok and want is None:
+        want = _lev_ok[symbol]
+    if want is None:
+        mx = 0
+        try:
+            mx = int(fapi.max_leverage(symbol) or 0)
+        except Exception:
+            mx = 0
+        want = LEV
+        if mx > 0 and mx < LEV:
+            want = LEV_FALLBACK if mx >= LEV_FALLBACK else mx
+    try:
+        fapi.set_leverage(symbol, want)
+        _lev_ok[symbol] = want
+        return want
+    except RuntimeError as e:
+        msg = str(e).lower()
+        bad = "leverage" in msg or "-4028" in str(e)
+        if bad and want != LEV_FALLBACK:
+            fapi.set_leverage(symbol, LEV_FALLBACK)
+            _lev_ok[symbol] = LEV_FALLBACK
+            return LEV_FALLBACK
+        if required:
+            raise
+        return _lev_ok.get(symbol) or LEV_FALLBACK
 
 _lock = threading.RLock()
 _state: dict | None = None
 _dual: bool | None = None
 _wallet_cache: dict = {"t": 0.0, "row": {}}
+_ov_snap: tuple[float, dict | None] = (0.0, None)
 
 
 def _now() -> datetime:
@@ -56,12 +104,62 @@ def _blank() -> dict:
         "error": "",
         "last_signal": "",
         "last_scan": "",
+        "skip_src": [],
+        "pending_close": [],
+        "pending_open": [],
+        "follow_aid": AID,
+        "follow_since": 0,
     }
+
+
+def _read_follow() -> dict:
+    if not os.path.isfile(_FOLLOW):
+        return {}
+    try:
+        with open(_FOLLOW, encoding="utf-8") as f:
+            d = json.load(f) or {}
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_follow(aid: str, since: int = 0, title: str = "") -> None:
+    row = {
+        "follow_aid": str(aid or "").strip(),
+        "follow_since": int(since or 0),
+        "title": str(title or ""),
+    }
+    tmp = _FOLLOW + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(row, f, ensure_ascii=False)
+        os.replace(tmp, _FOLLOW)
+    except OSError:
+        pass
+
+
+def _apply_follow(b: dict) -> dict:
+    """Aktif kaynak ayrı dosyada — eski süreç state kaydı 43'e çeviremesin."""
+    d = _read_follow()
+    aid = str(d.get("follow_aid") or "").strip()
+    if not aid:
+        return b
+    b["follow_aid"] = aid
+    try:
+        since = int(d.get("follow_since") or 0)
+    except (TypeError, ValueError):
+        since = 0
+    if since:
+        b["follow_since"] = since
+    if d.get("title"):
+        b["title"] = str(d.get("title") or b.get("title") or "")
+    return b
 
 
 def _load() -> dict:
     global _state
     if _state is not None:
+        _apply_follow(_state)
         return _state
     raw: dict = {}
     if os.path.isfile(_STATE):
@@ -78,6 +176,17 @@ def _load() -> dict:
     b["error"] = str(raw.get("error") or "")
     b["last_signal"] = str(raw.get("last_signal") or "")
     b["last_scan"] = str(raw.get("last_scan") or "")
+    b["skip_src"] = list(raw.get("skip_src") or [])
+    b["pending_close"] = list(raw.get("pending_close") or [])
+    b["pending_open"] = list(raw.get("pending_open") or [])
+    b["follow_aid"] = str(raw.get("follow_aid") or AID).strip() or AID
+    try:
+        b["follow_since"] = int(raw.get("follow_since") or 0)
+    except (TypeError, ValueError):
+        b["follow_since"] = 0
+    _apply_follow(b)
+    if not _read_follow().get("follow_aid"):
+        _write_follow(b["follow_aid"], int(b.get("follow_since") or 0), str(b.get("title") or ""))
     _state = b
     return _state
 
@@ -85,6 +194,7 @@ def _load() -> dict:
 def _save() -> None:
     if _state is None:
         return
+    _apply_follow(_state)
     tmp = _STATE + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -134,20 +244,270 @@ def wallet(force: bool = False) -> dict:
     return row
 
 
+def follow_aid() -> str:
+    aid = str(_read_follow().get("follow_aid") or "").strip()
+    if aid:
+        return aid
+    with _lock:
+        aid = str(_load().get("follow_aid") or AID).strip()
+    return aid or AID
+
+
+def has_src(src_id: str) -> bool:
+    sid = str(src_id or "")
+    if not sid:
+        return False
+    with _lock:
+        return any(str(p.get("src_id") or "") == sid for p in _load().get("positions") or [])
+
+
+def set_follow(aid: str) -> dict | None:
+    """LIVE bundan sonra bu sanal defteri kopyalar. Açık LIVE pozisyon kapanmaz."""
+    key = str(aid or "").strip()
+    if not key:
+        return None
+    st = paper._load()
+    books = st.get("algos") or {}
+    src = books.get(key)
+    if not src:
+        src = next((row for row in books.values() if paper._match_aid(row, key)), None)
+    if not src:
+        return None
+    nid = str(src.get("id") or "")
+    title = f"{src.get('code') or nid} — sanal kopya"
+    with _lock:
+        b = _load()
+        if str(b.get("follow_aid") or "") != nid:
+            b["follow_aid"] = nid
+            b["follow_since"] = int(time.time() * 1000)
+            _skip_open_paper(b, list(src.get("positions") or []))
+            b["title"] = title
+        _write_follow(nid, int(b.get("follow_since") or 0), str(b.get("title") or title))
+        _save()
+    return overview()
+
+
 def _meta() -> dict | None:
+    want = follow_aid()
     for m in paper._discover():
-        if m["id"] == AID:
+        if m["id"] == want:
             return m
     return None
 
 
+def _bn_opens() -> dict[str, dict] | None:
+    """None = okunamadı (pozisyonları silme). {} = gerçekten açık yok."""
+    try:
+        rows = fapi.position_risk()
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    out: dict[str, dict] = {}
+    for r in rows or []:
+        try:
+            amt = float(r.get("positionAmt") or 0)
+        except (TypeError, ValueError):
+            continue
+        if amt == 0:
+            continue
+        sym = str(r.get("symbol") or "")
+        if not sym:
+            continue
+        out[sym] = r
+    return out
+
+
+def _adopt_from_risk(r: dict) -> dict:
+    amt = float(r.get("positionAmt") or 0)
+    side = "LONG" if amt > 0 else "SHORT"
+    entry = float(r.get("entryPrice") or 0)
+    qty = abs(amt)
+    mark = float(r.get("markPrice") or entry)
+    lev = int(float(r.get("leverage") or LEV) or LEV)
+    iso = float(r.get("isolatedMargin") or 0)
+    return {
+        "id": "bn-" + uuid.uuid4().hex[:10],
+        "symbol": str(r.get("symbol") or ""),
+        "base": str(r.get("symbol") or "").replace("USDT", ""),
+        "side": side,
+        "entry": entry,
+        "mark": mark,
+        "qty": qty,
+        "qty_orig": qty,
+        "margin": iso if iso > 0 else MARGIN,
+        "lev": lev,
+        "atr": 0.0,
+        "atrp": 0.0,
+        "r_dist": 0.0,
+        "sl": 0.0,
+        "tp1": 0.0,
+        "tp": 0.0,
+        "tp2": 0.0,
+        "liq": _liq_px(side, entry) if entry else 0.0,
+        "peak": mark,
+        "trough": mark,
+        "trail_on": False,
+        "tp1_done": False,
+        "fee_open": paper._fee_on(qty, entry),
+        "funding_acc": 0.0,
+        "opened": _ts(),
+        "opened_iso": _iso(),
+        "opened_ms": int(time.time() * 1000),
+        "fill": "binance",
+        "live": True,
+        "order_id": "",
+        "src_id": "",
+        "unreal_bn": float(r.get("unRealizedProfit") or 0),
+    }
+
+
+def _sync_binance(b: dict, bn: dict | None = None) -> None:
+    """Ekran = Binance gerçeği. State'te olmayan açıklar alınır, Binance'te kapananlar düşer."""
+    if bn is None:
+        bn = _bn_opens()
+    if bn is None:
+        return
+    kept = []
+    have = set()
+    for p in b.get("positions") or []:
+        sym = str(p.get("symbol") or "")
+        if sym not in bn:
+            exit_px = float(p.get("mark") or p.get("entry") or 0)
+            qty = float(p.get("qty") or 0)
+            entry = float(p.get("entry") or 0)
+            side = str(p.get("side") or "")
+            fee_open = float(p.get("fee_open") or 0)
+            fee_close = paper._fee_on(qty, exit_px) if qty and exit_px else 0.0
+            gross = paper._pnl(side, entry, exit_px, qty) if qty and entry and exit_px else 0.0
+            if p.get("unreal_bn") not in (None, ""):
+                try:
+                    gross = float(p.get("unreal_bn"))
+                except (TypeError, ValueError):
+                    pass
+            rec = {
+                "id": p.get("id"),
+                "t": _ts(),
+                "iso": _iso(),
+                "symbol": sym,
+                "base": p.get("base"),
+                "side": side,
+                "entry": entry,
+                "exit": exit_px,
+                "reason": (
+                    f"STOP{int(p.get('trail_step') or 0)}"
+                    if p.get("trail_order_id") or p.get("trail_step")
+                    else "binance_flat"
+                ),
+                "gross": round(gross, 2),
+                "commission": round(fee_open + fee_close, 2),
+                "funding": 0.0,
+                "net": round(gross - fee_open - fee_close, 2),
+                "opened": p.get("opened") or "",
+                "closed": _ts(),
+                "mins": paper._hold_mins(p),
+                "live": True,
+            }
+            hist = b.setdefault("history", [])
+            hist.append(rec)
+            if len(hist) > 400:
+                del hist[:-400]
+            continue
+        r = bn[sym]
+        amt = abs(float(r.get("positionAmt") or 0))
+        if amt > 0:
+            _apply_bn_row(p, r)
+            _mirror_fill_to_paper(p)
+        kept.append(p)
+        have.add(sym)
+    follow = str(b.get("follow_aid") or AID)
+    src_book = (paper._load().get("algos") or {}).get(follow) or {}
+    by_sym = {str(p.get("symbol") or ""): p for p in src_book.get("positions") or []}
+    blocked = _pending_syms(b)
+    for sym, r in bn.items():
+        if sym in have or sym in blocked:
+            continue
+        row = _adopt_from_risk(r)
+        src = by_sym.get(sym)
+        if src:
+            row["src_id"] = str(src.get("id") or "")
+            row["src_aid"] = follow
+            _copy_paper_atr(row, src)
+        kept.append(row)
+    b["positions"] = kept
+
+
+def _apply_bn_row(p: dict, r: dict) -> None:
+    """LIVE satırı = Binance: giriş, mark, adet, PnL. Kâğıt fiyatı ezilmez."""
+    amt = abs(float(r.get("positionAmt") or 0))
+    if amt <= 0:
+        return
+    p["qty"] = amt
+    mark = float(r.get("markPrice") or p.get("mark") or 0)
+    if mark > 0:
+        p["mark"] = mark
+    ep = float(r.get("entryPrice") or 0)
+    if ep > 0:
+        p["entry"] = ep
+    p["unreal_bn"] = float(r.get("unRealizedProfit") or 0)
+    try:
+        lev = int(float(r.get("leverage") or 0) or 0)
+    except (TypeError, ValueError):
+        lev = 0
+    if lev:
+        p["lev"] = lev
+    iso = float(r.get("isolatedMargin") or 0)
+    if iso > 0:
+        p["margin"] = iso
+    p["fill"] = "binance"
+
+
+def _mirror_fill_to_paper(lp: dict) -> None:
+    """Kaynak sanal pozisyon Binance giriş/mark'ına uysun — aynı fiyat, aynı yön."""
+    sid = str(lp.get("src_id") or "")
+    if not sid:
+        return
+    entry = float(lp.get("entry") or 0)
+    mark = float(lp.get("mark") or 0)
+    if entry <= 0:
+        return
+    try:
+        with paper._lock:
+            st = paper._load()
+            books = st.get("algos") or {}
+            aid = str(lp.get("src_aid") or "")
+            src = books.get(aid) if aid else None
+            if not src:
+                src = next(
+                    (
+                        row for row in books.values()
+                        if any(str(p.get("id") or "") == sid for p in row.get("positions") or [])
+                    ),
+                    None,
+                )
+            if not src:
+                return
+            for p in src.get("positions") or []:
+                if str(p.get("id") or "") != sid:
+                    continue
+                p["entry"] = entry
+                if mark > 0:
+                    p["mark"] = mark
+                p["fill"] = "binance"
+                break
+            paper._save()
+    except Exception:
+        pass
+
+
 def _mark_one(p: dict, marks: dict) -> dict:
     info = marks.get(p["symbol"]) or {}
-    mark = float(info.get("mark") or info.get("price") or p.get("mark") or p["entry"])
+    mark = float(p.get("mark") or info.get("mark") or info.get("price") or p.get("entry") or 0)
     qty = float(p.get("qty") or 0)
     margin = float(p.get("margin") or MARGIN)
-    exit_est = paper._fill_px(p["side"], "close", info) or mark
-    gross = paper._pnl(p["side"], float(p["entry"]), mark, qty)
+    exit_est = float(p.get("mark") or 0) or paper._fill_px(p["side"], "close", info) or mark
+    entry = float(p.get("entry") or 0)
+    gross = paper._pnl(p["side"], entry, mark, qty)
     fee_open = float(p.get("fee_open") or 0)
     fee_close = paper._fee_on(qty, exit_est or mark)
     fund = float(p.get("funding_acc") or 0)
@@ -169,26 +529,179 @@ def _mark_one(p: dict, marks: dict) -> dict:
         "atr": round(float(p.get("atr") or 0), 8),
         "atrp": round(float(p.get("atrp") or 0), 2),
         "trail_on": bool(p.get("trail_on")),
+        "trail_log": list(p.get("trail_log") or []),
+        "trail_step": int(p.get("trail_step") or 0),
+        "trail_stop_px": float(p.get("trail_stop_px") or 0),
+        "trail_err": str(p.get("trail_err") or ""),
         "tp1_done": bool(p.get("tp1_done")),
+        "r_dist": round(float(p.get("r_dist") or 0), 8),
         "live": True,
     })
     return out
 
 
+def _copy_paper_atr(lp: dict, src: dict) -> None:
+    if not src:
+        return
+    lp["atr"] = float(src.get("atr") or 0)
+    lp["atrp"] = float(src.get("atrp") or 0)
+    lp["sl"] = float(src.get("sl") or 0)
+    lp["tp1"] = float(src.get("tp1") or 0)
+    lp["tp"] = float(src.get("tp") or src.get("tp2") or 0)
+    lp["tp2"] = float(src.get("tp2") or src.get("tp") or 0)
+    lp["r_dist"] = float(src.get("r_dist") or 0)
+    lp["trail_on"] = bool(src.get("trail_on"))
+    if src.get("tp1_done"):
+        lp["tp1_done"] = True
+
+
+def _trail_place(symbol, close_side, stop_price, cid, working_type, position_side):
+    return fapi.stop_market_close(
+        symbol,
+        close_side,
+        stop_price,
+        client_order_id=cid,
+        working_type=working_type,
+        position_side=position_side,
+    )
+
+
+def _trail_cancel(symbol, order_id) -> None:
+    fapi.cancel_order(symbol, order_id)
+
+
+def _cancel_step_trail(p: dict) -> None:
+    oid = p.get("trail_order_id")
+    if not oid:
+        p["trail_order_id"] = None
+        p["trail_cid"] = None
+        return
+    try:
+        _trail_cancel(str(p.get("symbol") or ""), oid)
+    except Exception:
+        pass
+    p["trail_order_id"] = None
+    p["trail_cid"] = None
+
+
+def _step_trailer(lp: dict) -> ATRStepTrailingStop:
+    filt = paper._filters().get(lp["symbol"]) or {}
+    tick = float(filt.get("tick") or 0)
+    t = ATRStepTrailingStop(
+        symbol=str(lp["symbol"]),
+        side=str(lp["side"]),
+        entry_price=float(lp["entry"]),
+        quantity=float(lp.get("qty") or 0),
+        activation_atr_mult=0.5,
+        trail_atr_mult=1.0,
+        min_step_atr_mult=0.25,
+        place_fn=_trail_place,
+        cancel_fn=_trail_cancel,
+        round_fn=(lambda px, tk=tick: paper._round_tick(px, tk)) if tick else None,
+        position_side=_pos_side(str(lp["side"])),
+    )
+    t.active = bool(lp.get("trail_on"))
+    t.step = int(lp.get("trail_step") or 0)
+    entry = float(lp.get("entry") or 0)
+    if lp["side"] == "LONG":
+        t.high_water = float(lp.get("peak") or entry)
+    else:
+        t.high_water = float(lp.get("trough") or entry)
+    if lp.get("trail_stop_px"):
+        t.current_stop_price = float(lp["trail_stop_px"])
+    if lp.get("trail_order_id"):
+        try:
+            t.current_order_id = int(lp["trail_order_id"])
+        except (TypeError, ValueError):
+            t.current_order_id = None
+    t.current_client_order_id = lp.get("trail_cid") or None
+    return t
+
+
+def _sync_step_trail(lp: dict) -> None:
+    """Zarar SL durur. 0.5×ATR kârda girise kilit, sonra 1×ATR trail → Binance STOP."""
+    mark = float(lp.get("mark") or 0)
+    atr = float(lp.get("atr") or 0)
+    entry = float(lp.get("entry") or 0)
+    if mark <= 0 or atr <= 0 or entry <= 0:
+        return
+    if lp["side"] == "LONG":
+        lp["peak"] = max(float(lp.get("peak") or entry), mark)
+        profit = float(lp["peak"]) - entry
+    else:
+        lp["trough"] = min(float(lp.get("trough") or entry), mark)
+        profit = entry - float(lp["trough"])
+    if profit >= atr * 0.5:
+        lp["trail_on"] = True
+        from atr_sistem import lock_stop
+        ext = float(lp["peak"] if lp["side"] == "LONG" else lp["trough"])
+        locked = lock_stop(str(lp["side"]), entry, ext, atr)
+        if lp["side"] == "LONG":
+            lp["sl"] = max(float(lp.get("sl") or 0), locked)
+        else:
+            sl0 = float(lp.get("sl") or 0)
+            lp["sl"] = min(sl0, locked) if sl0 else locked
+    if not lp.get("trail_on"):
+        return
+    t = _step_trailer(lp)
+    try:
+        t.on_price_update(mark, atr)
+        lp["trail_err"] = ""
+    except Exception as e:
+        lp["trail_err"] = str(e)[:120]
+        return
+    lp["trail_step"] = t.step
+    lp["trail_stop_px"] = t.current_stop_price
+    lp["trail_order_id"] = t.current_order_id
+    lp["trail_cid"] = t.current_client_order_id
+    if lp["side"] == "LONG":
+        lp["peak"] = t.high_water
+    else:
+        lp["trough"] = t.high_water
+    paper._note_lock(lp)
+
+
 def overview() -> dict:
+    global _ov_snap
+    now = time.time()
+    if _ov_snap[1] is not None and now - _ov_snap[0] < 2.0:
+        return _ov_snap[1]
+    bn = _bn_opens()
+    marks = paper._marks()
+    w = wallet()
     with _lock:
         b = _load()
-        marks = paper._marks()
+        try:
+            _sync_binance(b, bn)
+            follow = str(b.get("follow_aid") or AID)
+            src_book = (paper._load().get("algos") or {}).get(follow) or {}
+            by_id = {str(p.get("id")): p for p in src_book.get("positions") or []}
+            by_sym = {str(p.get("symbol")): p for p in src_book.get("positions") or []}
+            for lp in b.get("positions") or []:
+                if not _belongs_to_follow(lp, follow):
+                    continue
+                src = by_id.get(str(lp.get("src_id") or "")) or by_sym.get(str(lp.get("symbol") or ""))
+                if src:
+                    lp["src_id"] = src.get("id")
+                    lp["src_aid"] = follow
+                    _copy_paper_atr(lp, src)
+            _save()
+        except Exception:
+            pass
+        follow = str(b.get("follow_aid") or AID)
+        src_book = (paper._load().get("algos") or {}).get(follow) or {}
         poss = [_mark_one(p, marks) for p in b.get("positions") or []]
         hist = list(b.get("history") or [])[-80:][::-1]
         wins = sum(1 for h in hist if float(h.get("net") or 0) > 0)
         realized = sum(float(h.get("net") or 0) for h in hist)
-        w = wallet()
         equity = float(w.get("wallet") or 0) + float(w.get("unreal") or 0)
-        return {
+        row = {
             "id": AID,
             "code": "LIVE",
-            "title": b.get("title") or "Squeeze Momentum",
+            "title": b.get("title") or src_book.get("title") or "LIVE",
+            "follow_aid": follow,
+            "follow_code": src_book.get("code") or follow,
+            "follow_title": src_book.get("title") or "",
             "auto": True,
             "active": bool(b.get("active")),
             "live": True,
@@ -214,6 +727,8 @@ def overview() -> dict:
             "margin": MARGIN,
             "lev": LEV,
         }
+    _ov_snap = (now, row)
+    return row
 
 
 def toggle() -> dict:
@@ -224,9 +739,9 @@ def toggle() -> dict:
     return overview()
 
 
-def _place(symbol: str, side: str, qty: float, step: float, close: bool = False) -> dict:
+def _place(symbol: str, side: str, qty: float, step: float, close: bool = False, lev: int | None = None) -> dict:
     fapi.set_isolated(symbol)
-    fapi.set_leverage(symbol, LEV)
+    _ensure_lev(symbol, lev, required=not close)
     q = _qty_fmt(qty, step)
     if float(q) <= 0:
         raise RuntimeError("miktar 0")
@@ -289,6 +804,8 @@ def _hist_rec(p: dict, exit_px: float, qty: float, reason: str, fee_close: float
 
 
 def _close_qty(b: dict, p: dict, qty: float, reason: str, partial: bool = False) -> dict | None:
+    if not partial:
+        _cancel_step_trail(p)
     filt = paper._filters().get(p["symbol"]) or {}
     step = float(filt.get("step") or 0.001)
     order = _place(p["symbol"], p["side"], qty, step, close=True)
@@ -324,11 +841,18 @@ def close_pos(pos_id: str, reason: str = "manuel") -> tuple[dict, int]:
             b["error"] = str(e)[:160]
             _save()
             return {"error": str(e)[:160]}, 400
+        src = str(hit.get("src_id") or "")
+        if src:
+            skip = b.setdefault("skip_src", [])
+            if src not in skip:
+                skip.append(src)
+                if len(skip) > 80:
+                    del skip[:-80]
         _save()
         return {"ok": True, "closed": rec, "book": overview()}, 200
 
 
-def _open_pos(b: dict, symbol: str, side: str, marks: dict, df) -> dict | None:
+def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None, src_id: str = "", src: dict | None = None) -> dict | None:
     if not b.get("active"):
         return None
     if not fapi.enabled():
@@ -337,27 +861,48 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df) -> dict | None:
         return None
     if any(p["symbol"] == symbol for p in b.get("positions") or []):
         return None
+    if src_id and src_id in (b.get("skip_src") or []):
+        return None
     info = marks.get(symbol) or {}
     filt = paper._filters().get(symbol) or {}
     tick = float(filt.get("tick") or 0)
     step = float(filt.get("step") or 0.001)
     px = paper._round_tick(paper._fill_px(side, "open", info), tick)
-    if px <= 0 or df is None:
+    if px <= 0:
         return None
-    atr = atr_last(df)
-    if atr <= 0:
+    try:
+        lev = _ensure_lev(symbol)
+    except Exception as e:
+        b["error"] = str(e)[:160]
         return None
-    ap = _atrp(atr, px)
-    if ap >= ATRP_NO_TRADE:
-        return None
-    lv = _atr_levels(side, px, atr)
-    sl = paper._round_tick(lv["sl"], tick)
-    tp1 = paper._round_tick(lv["tp1"], tick)
-    tp2 = paper._round_tick(lv["tp2"], tick)
-    liq = paper._round_tick(paper._liq_price(side, px), tick)
-    if not sl_clears_liq(side, px, sl, liq):
-        return None
-    qty = paper._round_step(NOTIONAL / px, step)
+    notional = MARGIN * lev
+    r_dist = 0.0
+    if src:
+        atr = float(src.get("atr") or 0)
+        ap = float(src.get("atrp") or 0)
+        sl = float(src.get("sl") or 0)
+        tp1 = float(src.get("tp1") or 0)
+        tp2 = float(src.get("tp") or src.get("tp2") or 0)
+        r_dist = float(src.get("r_dist") or 0)
+        liq = paper._round_tick(_liq_px(side, px, lev), tick)
+    else:
+        if df is None:
+            return None
+        atr = atr_last(df)
+        if atr <= 0:
+            return None
+        ap = _atrp(atr, px)
+        if ap >= ATRP_NO_TRADE:
+            return None
+        lv = _atr_levels(side, px, atr)
+        sl = paper._round_tick(lv["sl"], tick)
+        tp1 = paper._round_tick(lv["tp1"], tick)
+        tp2 = paper._round_tick(lv["tp2"], tick)
+        r_dist = float(lv["r_dist"])
+        liq = paper._round_tick(_liq_px(side, px, lev), tick)
+        if not sl_clears_liq(side, px, sl, liq):
+            return None
+    qty = paper._round_step(notional / px, step)
     if qty <= 0 or qty * px < float(filt.get("min_notional") or 5):
         return None
     w = wallet(force=True)
@@ -365,7 +910,7 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df) -> dict | None:
         b["error"] = "USDT yetersiz"
         return None
     try:
-        order = _place(symbol, side, qty, step, close=False)
+        order = _place(symbol, side, qty, step, close=False, lev=lev)
     except Exception as e:
         b["error"] = str(e)[:160]
         return None
@@ -381,10 +926,10 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df) -> dict | None:
         "qty": fill_qty,
         "qty_orig": fill_qty,
         "margin": MARGIN,
-        "lev": LEV,
+        "lev": lev,
         "atr": atr,
         "atrp": round(ap, 2),
-        "r_dist": lv["r_dist"],
+        "r_dist": r_dist,
         "sl": sl,
         "tp1": tp1,
         "tp": tp2,
@@ -402,6 +947,8 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df) -> dict | None:
         "fill": "binance",
         "live": True,
         "order_id": str(order.get("orderId") or ""),
+        "src_id": src_id or str((src or {}).get("id") or ""),
+        "src_aid": str(b.get("follow_aid") or follow_aid()) if (src_id or src) else "",
     }
     b["fees"] = round(float(b.get("fees") or 0) + fee, 2)
     b.setdefault("positions", []).append(pos)
@@ -409,7 +956,189 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df) -> dict | None:
     return pos
 
 
+def follow_open(paper_pos: dict, marks: dict, df=None) -> dict | None:
+    """Sanal yeni işlem açınca LIVE'da da aç. Defter kopyalamaz."""
+    if not paper_pos:
+        return None
+    with _lock:
+        b = _load()
+        pid = str(paper_pos.get("id") or "")
+        pos = _open_pos(
+            b,
+            str(paper_pos.get("symbol") or ""),
+            str(paper_pos.get("side") or ""),
+            marks,
+            df,
+            src_id=pid,
+            src=paper_pos,
+        )
+        pending = b.setdefault("pending_open", [])
+        if pos is None and pid and b.get("active") and pid not in (b.get("skip_src") or []):
+            if pid not in pending:
+                pending.append(pid)
+            if len(pending) > 20:
+                del pending[:-20]
+        elif pos is not None and pid in pending:
+            pending.remove(pid)
+        _save()
+        return pos
+
+
+def queue_close(symbol: str, reason: str = "paper_close", src_id: str = "", partial: bool = False) -> None:
+    """Sanal kapanışı hemen kuyruğa yaz — emir başarısız olsa da taramada tekrarlanır."""
+    with _lock:
+        b = _load()
+        _queue_close(b, symbol, reason, src_id, partial)
+        _save()
+
+
+def follow_close(symbol: str, reason: str, partial: bool = False, src_id: str = "") -> None:
+    """Kaynak sanal defter kapatınca LIVE'ı da kapat. State'te yoksa Binance'ten düzler."""
+    with _lock:
+        b = _load()
+        _queue_close(b, symbol, reason, src_id, partial)
+        _flush_symbol(b, str(symbol or ""), reason, src_id, partial)
+        _save()
+
+
+def _queue_close(b: dict, symbol: str, reason: str, src_id: str = "", partial: bool = False) -> None:
+    sym = str(symbol or "").strip()
+    if not sym:
+        return
+    pend = b.setdefault("pending_close", [])
+    for row in pend:
+        if str(row.get("symbol") or "") == sym and bool(row.get("partial")) == bool(partial):
+            if src_id and not row.get("src_id"):
+                row["src_id"] = src_id
+            if reason:
+                row["reason"] = reason
+            return
+    pend.append({
+        "symbol": sym,
+        "reason": reason or "paper_close",
+        "src_id": str(src_id or ""),
+        "partial": bool(partial),
+        "t": _iso(),
+    })
+    if len(pend) > 40:
+        del pend[:-40]
+
+
+def _pending_syms(b: dict) -> set[str]:
+    return {str(x.get("symbol") or "") for x in (b.get("pending_close") or []) if x.get("symbol")}
+
+
+def _drop_pending(b: dict, symbol: str, partial: bool | None = None) -> None:
+    pend = b.get("pending_close") or []
+    if partial is None:
+        b["pending_close"] = [x for x in pend if str(x.get("symbol") or "") != symbol]
+        return
+    b["pending_close"] = [
+        x for x in pend
+        if not (str(x.get("symbol") or "") == symbol and bool(x.get("partial")) == bool(partial))
+    ]
+
+
+def _bn_amt(symbol: str) -> float | None:
+    try:
+        rows = fapi.position_risk(symbol)
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    tot = 0.0
+    for r in rows or []:
+        if str(r.get("symbol") or "") != symbol:
+            continue
+        try:
+            tot += float(r.get("positionAmt") or 0)
+        except (TypeError, ValueError):
+            continue
+    return tot
+
+
+def _flatten_exchange(symbol: str, side: str | None = None) -> dict | None:
+    """State'te yoksa bile Binance açıkını market ile kapat."""
+    amt = _bn_amt(symbol)
+    if amt is None:
+        raise RuntimeError(f"{symbol} Binance okunamadı")
+    if amt == 0:
+        return None
+    sd = side or ("LONG" if amt > 0 else "SHORT")
+    qty = abs(amt)
+    filt = paper._filters().get(symbol) or {}
+    step = float(filt.get("step") or 0.001)
+    return _place(symbol, sd, qty, step, close=True)
+
+
+def _flush_symbol(b: dict, symbol: str, reason: str, src_id: str = "", partial: bool = False) -> None:
+    if not symbol:
+        return
+    hit = next((p for p in b.get("positions") or [] if p.get("symbol") == symbol), None)
+    if not hit and src_id:
+        hit = next((p for p in b.get("positions") or [] if str(p.get("src_id") or "") == src_id), None)
+    try:
+        if hit:
+            if partial:
+                if hit.get("tp1_done"):
+                    _drop_pending(b, symbol, True)
+                    return
+                _close_qty(b, hit, float(hit.get("qty") or 0) * 0.5, reason, partial=True)
+            else:
+                _close_qty(b, hit, float(hit.get("qty") or 0), reason, partial=False)
+        elif not partial:
+            _flatten_exchange(symbol)
+    except Exception as e:
+        msg = str(e)
+        flat = any(k in msg.lower() for k in ("reduceonly", "position", "-2022", "-2019", "insufficient"))
+        if not flat:
+            b["error"] = msg[:160]
+            return
+    left = _bn_amt(symbol)
+    if left is None:
+        return
+    if abs(left) < 1e-12:
+        _drop_pending(b, symbol, None if not partial else True)
+        if not partial:
+            b["positions"] = [p for p in (b.get("positions") or []) if p.get("symbol") != symbol]
+
+
+def _flush_pending(b: dict) -> None:
+    for row in list(b.get("pending_close") or []):
+        _flush_symbol(
+            b,
+            str(row.get("symbol") or ""),
+            str(row.get("reason") or "paper_close"),
+            str(row.get("src_id") or ""),
+            bool(row.get("partial")),
+        )
+
+
+def _paper_source() -> dict:
+    st = paper._load()
+    return (st.get("algos") or {}).get(follow_aid()) or {}
+
+
+def _belongs_to_follow(lp: dict, follow: str) -> bool:
+    src_aid = str(lp.get("src_aid") or "")
+    if not src_aid:
+        return True
+    return src_aid == follow
+
+
+def _skip_open_paper(b: dict, paper_pos: list) -> None:
+    """Şu an açık sanalları kopyalama — sadece bundan sonra açılanlar."""
+    skip = b.setdefault("skip_src", [])
+    for p in paper_pos:
+        pid = str(p.get("id") or "")
+        if pid and pid not in skip:
+            skip.append(pid)
+    if len(skip) > 80:
+        del skip[:-80]
+
+
 def on_scan(frames: dict, marks: dict) -> None:
+    """Sinyal üretmez. Yeni sanal işlem = follow_open. Açık defteri kopyalamaz."""
     if not fapi.configured():
         with _lock:
             b = _load()
@@ -417,46 +1146,56 @@ def on_scan(frames: dict, marks: dict) -> None:
             b["last_scan"] = _iso()
             _save()
         return
+    follow = follow_aid()
+    src_book = _paper_source()
+    paper_pos = list(src_book.get("positions") or [])
+    by_id = {str(p.get("id")): p for p in paper_pos}
+    by_sym = {str(p.get("symbol")): p for p in paper_pos}
     with _lock:
         b = _load()
-        for p in list(b.get("positions") or []):
-            info = marks.get(p["symbol"]) or {}
-            mk = float(info.get("mark") or info.get("price") or 0)
-            if mk <= 0:
-                continue
-            paper._refresh_trail(p, mk, frames.get(p["symbol"]))
-            why = paper._hit_exit(p, mk)
-            try:
-                if why == "take_profit_1":
-                    _close_qty(b, p, float(p.get("qty") or 0) * 0.5, why, partial=True)
-                elif why:
-                    _close_qty(b, p, float(p.get("qty") or 0), why, partial=False)
-            except Exception as e:
-                b["error"] = str(e)[:160]
-        _save()
-
-    meta = _meta()
-    if not meta:
-        return
-    book = {"id": AID, "file": meta["file"], "class_name": meta["class_name"]}
-    err, hits, last = paper._eval_hits(book, frames, marks)
-    with _lock:
-        b = _load()
-        b["last_signal"] = last
+        b["title"] = f"{src_book.get('code') or follow} — sanal kopya"
+        b["last_signal"] = str(src_book.get("last_signal") or "")
         b["last_scan"] = _iso()
-        if err:
-            b["error"] = err
-            _save()
-            return
-        if not b.get("active"):
-            _save()
-            return
-        held = {p["symbol"] for p in b.get("positions") or []}
-        for _qv, sym, side, _desc, _chg in hits:
-            if sym in held or len(held) >= MAX_POS:
+        try:
+            _sync_binance(b)
+        except Exception as e:
+            b["error"] = str(e)[:160]
+        _flush_pending(b)
+        want_close = _pending_syms(b)
+        for lp in list(b.get("positions") or []):
+            if not _belongs_to_follow(lp, follow):
                 continue
-            if _open_pos(b, sym, side, marks, frames.get(sym)):
-                held.add(sym)
+            src = by_id.get(str(lp.get("src_id") or ""))
+            if not src:
+                src = by_sym.get(str(lp.get("symbol") or ""))
+                if src:
+                    lp["src_id"] = src.get("id")
+                    lp["src_aid"] = follow
+            if src and str(lp.get("symbol") or "") not in want_close:
+                _copy_paper_atr(lp, src)
+                _sync_step_trail(lp)
+                continue
+            _queue_close(b, str(lp.get("symbol") or ""), "paper_close", str(lp.get("src_id") or ""))
+            _flush_symbol(b, str(lp.get("symbol") or ""), "paper_close", str(lp.get("src_id") or ""))
+        if b.get("active"):
+            blocked = _pending_syms(b)
+            live_src = {str(p.get("src_id") or "") for p in b.get("positions") or []}
+            live_sym = {str(p.get("symbol") or "") for p in b.get("positions") or []}
+            still = []
+            for pid in list(b.get("pending_open") or []):
+                p = by_id.get(pid)
+                if not p or pid in (b.get("skip_src") or []) or pid in live_src:
+                    continue
+                if p.get("symbol") in live_sym or p.get("symbol") in blocked:
+                    still.append(pid)
+                    continue
+                got = _open_pos(
+                    b, p["symbol"], p["side"], marks, frames.get(p["symbol"]),
+                    src_id=pid, src=p,
+                )
+                if not got:
+                    still.append(pid)
+            b["pending_open"] = still
         _save()
 
 
@@ -483,14 +1222,18 @@ def _trades_vwap(rows: list) -> tuple[float, float, float, float]:
 
 
 def repair_history() -> list[dict]:
-    """exit=entry yazılmış kapanışları Binance dolumundan düzelt."""
+    """Sahte 0 PnL / exit=entry kayıtlarını Binance dolumundan düzelt."""
     fixed = []
     with _lock:
         b = _load()
         for h in b.get("history") or []:
             entry = float(h.get("entry") or 0)
             exit_px = float(h.get("exit") or 0)
-            if entry <= 0 or abs(exit_px - entry) > max(entry * 1e-8, 1e-12):
+            net = float(h.get("net") or 0)
+            reason = str(h.get("reason") or "")
+            same_px = entry > 0 and abs(exit_px - entry) <= max(entry * 1e-8, 1e-12)
+            zero_flat = reason == "binance_flat" and abs(net) < 1e-9
+            if not same_px and not zero_flat:
                 continue
             sym = str(h.get("symbol") or "")
             if not sym:
@@ -498,32 +1241,52 @@ def repair_history() -> list[dict]:
             try:
                 trades = fapi.user_trades(sym, 80)
             except Exception:
-                continue
-            t0 = _iso_ms(str(h.get("opened_iso") or "")) - 15_000
-            t1 = _iso_ms(str(h.get("closed_iso") or h.get("iso") or "")) + 15_000
-            if t1 <= t0:
-                continue
+                trades = []
+            t1 = _iso_ms(str(h.get("closed_iso") or h.get("iso") or "")) or int(time.time() * 1000)
+            t0 = _iso_ms(str(h.get("opened_iso") or ""))
+            if t0 <= 0:
+                t0 = t1 - 8 * 3600 * 1000
+            t0 -= 15_000
+            t1 += 15_000
             side = str(h.get("side") or "")
             open_side = "SELL" if side == "SHORT" else "BUY"
             close_side = "BUY" if side == "SHORT" else "SELL"
-            opens = [t for t in trades if str(t.get("side")) == open_side and t0 <= int(t.get("time") or 0) <= t1]
-            closes = [t for t in trades if str(t.get("side")) == close_side and t0 <= int(t.get("time") or 0) <= t1]
-            if not opens or not closes:
+            window = [t for t in trades if t0 <= int(t.get("time") or 0) <= t1]
+            opens = [t for t in window if str(t.get("side")) == open_side]
+            closes = [t for t in window if str(t.get("side")) == close_side]
+            if not closes:
+                closes = [t for t in trades if str(t.get("side")) == close_side and abs(float(t.get("realizedPnl") or 0)) > 0][-8:]
+            if not opens:
+                opens = [t for t in trades if str(t.get("side")) == open_side][:8]
+            if closes:
+                e_px, _, fee_o, _ = _trades_vwap(opens) if opens else (entry, 0.0, 0.0, 0.0)
+                x_px, qty, fee_c, rpnl = _trades_vwap(closes)
+                if e_px <= 0:
+                    e_px = entry
+                if x_px <= 0:
+                    x_px = exit_px
+                fee = fee_o + fee_c
+                gross = rpnl if abs(rpnl) > 0 else paper._pnl(side, e_px, x_px, qty)
+                h["entry"] = e_px
+                h["exit"] = x_px
+                h["gross"] = round(gross, 2)
+                h["commission"] = round(fee, 2)
+                h["net"] = round(gross - fee, 2)
+                if h.get("reason") == "binance_flat":
+                    h["reason"] = "kapanış"
+                fixed.append({"symbol": sym, "net": h["net"]})
                 continue
-            e_px, _, fee_o, _ = _trades_vwap(opens)
-            x_px, qty, fee_c, rpnl = _trades_vwap(closes)
-            if e_px <= 0 or x_px <= 0:
+            qty = float(h.get("qty") or 0)
+            if qty <= 0 or entry <= 0 or exit_px <= 0:
                 continue
-            fee = fee_o + fee_c
-            gross = paper._pnl(side, e_px, x_px, qty)
-            if abs(rpnl) > 0:
-                gross = rpnl
-            h["entry"] = e_px
-            h["exit"] = x_px
+            fee = paper._fee_on(qty, entry) + paper._fee_on(qty, exit_px)
+            gross = paper._pnl(side, entry, exit_px, qty)
             h["gross"] = round(gross, 2)
             h["commission"] = round(fee, 2)
             h["net"] = round(gross - fee, 2)
-            fixed.append({"symbol": sym, "entry": e_px, "exit": x_px, "net": h["net"]})
+            if h.get("reason") == "binance_flat":
+                h["reason"] = "kapanış"
+            fixed.append({"symbol": sym, "net": h["net"]})
         _save()
     return fixed
 

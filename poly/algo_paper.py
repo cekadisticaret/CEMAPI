@@ -23,10 +23,12 @@ from zoneinfo import ZoneInfo
 from atr_sistem import (
     ATRP_NO_TRADE,
     ATR_SL_MULT,
+    ATR_LOCK_ON,
     ATR_TRAIL_MULT,
     atr_last,
     atrp as _atrp,
     levels as _atr_levels,
+    lock_stop,
     sl_clears_liq,
     trail_stop,
 )
@@ -50,13 +52,14 @@ TP_PCT = 0.020
 SL_PCT = 0.015
 INTERVAL = "15m"
 KLINE_N = 90
-SCAN_SEC = 60
+SCAN_SEC = 25
 
 _SKIP_FILES = {"hmm_regime_detector (1).py"}
 _SKIP_CLASSES = {
     "GridLevel", "ArbitrageOpportunity", "ChandelierLevels",
     "AlgorithmMeta", "AlgorithmLoader", "SignalExtractor",
     "ConsensusEngine", "RiskManager",
+    "KalmanState", "GARCHResult",
 }
 _NO_AUTO = {
     "mvrv_zscore", "sopr_indicator", "funding_arbitrage",
@@ -81,6 +84,77 @@ _px_cache: tuple[float, dict[str, dict]] = (0.0, {})
 _book_cache: dict = {"t": 0.0, "rows": {}}
 _filt_cache: dict = {"t": 0.0, "rows": {}}
 _mods: dict[str, object] = {}
+_eval_i = 0
+EVAL_COINS = 36
+EVAL_BATCH = 6
+_ov_snap: tuple[float, dict | None] = (0.0, None)
+_det_snap: dict[str, tuple[float, dict]] = {}
+
+
+def _live_follow_open(pos: dict, marks: dict, df) -> None:
+    snap = dict(pos)
+    threading.Thread(
+        target=_live_follow_open_now,
+        args=(snap, marks, df),
+        name="live-follow-open",
+        daemon=True,
+    ).start()
+
+
+def _live_follow_open_now(pos: dict, marks: dict, df) -> None:
+    try:
+        import algo_live
+        algo_live.follow_open(pos, marks, df)
+    except Exception:
+        traceback.print_exc()
+
+
+def _live_follow_close(symbol: str, reason: str, partial: bool = False, src_id: str = "") -> None:
+    try:
+        import algo_live
+        algo_live.queue_close(str(symbol or ""), reason, str(src_id or ""), partial)
+    except Exception:
+        traceback.print_exc()
+    threading.Thread(
+        target=_live_follow_close_now,
+        args=(str(symbol or ""), reason, partial, str(src_id or "")),
+        name="live-follow-close",
+        daemon=True,
+    ).start()
+
+
+def _live_follow_close_now(symbol: str, reason: str, partial: bool = False, src_id: str = "") -> None:
+    try:
+        import algo_live
+        algo_live.follow_close(symbol, reason, partial=partial, src_id=src_id)
+    except Exception:
+        traceback.print_exc()
+
+
+def _live_follow_id() -> str:
+    try:
+        import algo_live
+        return algo_live.follow_aid()
+    except Exception:
+        return "squeeze_momentum"
+
+
+def _live_has_src(src_id: str) -> bool:
+    if not src_id:
+        return False
+    try:
+        import algo_live
+        return algo_live.has_src(src_id)
+    except Exception:
+        return False
+
+
+def _follow_open_ok(b: dict) -> bool:
+    return str(b.get("id") or "") == _live_follow_id()
+
+
+def _follow_close_ok(b: dict, src_id: str = "") -> bool:
+    return _follow_open_ok(b) or _live_has_src(src_id)
 
 
 def _now() -> datetime:
@@ -222,6 +296,32 @@ def _load() -> dict:
         "last_scan": raw.get("last_scan") or "",
     }
     return _state
+
+
+def _sync_catalog() -> None:
+    """ALG klasörüne yeni dosya gelince deftere ekle — restart bekleme."""
+    st = _load()
+    catalog = {m["id"]: m for m in _discover()}
+    books = st["algos"]
+    used = {_code_num(b.get("code")) for b in books.values()}
+    changed = False
+    for mid, meta in catalog.items():
+        if mid in books:
+            books[mid]["file"] = meta["file"]
+            books[mid]["class_name"] = meta["class_name"]
+            books[mid]["title"] = meta["title"]
+            books[mid]["auto"] = meta["auto"]
+            continue
+        b = _blank_book(meta)
+        nxt = 1
+        while nxt in used:
+            nxt += 1
+        b["code"] = _fmt_code(nxt)
+        used.add(nxt)
+        books[mid] = b
+        changed = True
+    if changed:
+        _save()
 
 
 def _save() -> None:
@@ -425,19 +525,37 @@ def _load_instance(meta: dict):
     return inst
 
 
-def _call_run(inst, df) -> dict:
+def _ref_close(symbol: str, n: int):
+    """Kalman pair için ikinci seri — coin vs BTC (BTC ise ETH)."""
+    ref = "ETHUSDT" if symbol == "BTCUSDT" else "BTCUSDT"
+    df = _klines(ref)
+    if df is None or len(df) < 30:
+        return None
+    return df["close"].iloc[-n:].reset_index(drop=True)
+
+
+def _call_run(inst, df, symbol: str = "") -> dict:
     import pandas as pd
     fn = inst.run
     names = [p for p in inspect.signature(fn).parameters if p != "self"]
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    vol = df["volume"]
-    opn = df["open"]
+    close = df["close"].reset_index(drop=True)
+    high = df["high"].reset_index(drop=True)
+    low = df["low"].reset_index(drop=True)
+    vol = df["volume"].reset_index(drop=True)
+    opn = df["open"].reset_index(drop=True)
+    base = str(symbol or "").replace("USDT", "") or "BTC"
     kw = {}
     for n in names:
-        if n in ("prices", "close", "series1"):
+        if n in ("prices", "close", "series1", "series_y"):
             kw[n] = close
+        elif n in ("series2", "series_x"):
+            ref = _ref_close(symbol, len(close))
+            if ref is None:
+                return {"signal": "SKIP"}
+            nbar = min(len(close), len(ref))
+            kw[n] = ref.iloc[-nbar:].reset_index(drop=True)
+            if "series_y" in kw:
+                kw["series_y"] = close.iloc[-nbar:].reset_index(drop=True)
         elif n == "high":
             kw[n] = high
         elif n == "low":
@@ -450,18 +568,18 @@ def _call_run(inst, df) -> dict:
             kw[n] = float(close.iloc[-1])
         elif n == "timestamps":
             kw[n] = pd.RangeIndex(len(df))
-        elif n == "series2":
-            return {"signal": "SKIP"}
-        elif n in ("asset", "sopr_type", "symbol", "oi", "signals", "df"):
+        elif n == "asset":
+            kw[n] = base
+        elif n in ("sopr_type", "oi", "signals", "df"):
             return {"signal": "SKIP"}
     return fn(**kw) if kw or not names else fn()
 
 
 def _side_of(sig: str) -> str | None:
     s = (sig or "").upper()
-    if s in ("BUY", "LONG", "BULLISH", "STRONG_BUY"):
+    if s in ("BUY", "LONG", "BULLISH", "STRONG_BUY", "FADE_LONG", "LONG_SPREAD"):
         return "LONG"
-    if s in ("SELL", "SHORT", "BEARISH", "STRONG_SELL"):
+    if s in ("SELL", "SHORT", "BEARISH", "STRONG_SELL", "FADE_SHORT", "SHORT_SPREAD"):
         return "SHORT"
     return None
 
@@ -497,7 +615,10 @@ def _exit_px(p: dict, info: dict, reason: str = "") -> float:
 
 def _mark_pos(p: dict, marks: dict[str, dict]) -> dict:
     info = marks.get(p["symbol"]) or {}
-    mark = float(info.get("mark") or info.get("price") or p.get("mark") or p["entry"])
+    if str(p.get("fill") or "") == "binance" and float(p.get("mark") or 0) > 0:
+        mark = float(p["mark"])
+    else:
+        mark = float(info.get("mark") or info.get("price") or p.get("mark") or p["entry"])
     chg = float(info.get("chg") or 0)
     qty = _qty_of(p)
     exit_est = _exit_px(p, info)
@@ -528,26 +649,30 @@ def _mark_pos(p: dict, marks: dict[str, dict]) -> dict:
         "atr": round(float(p.get("atr") or 0), 8),
         "atrp": round(float(p.get("atrp") or 0), 2),
         "trail_on": bool(p.get("trail_on")),
+        "trail_log": list(p.get("trail_log") or []),
         "tp1_done": bool(p.get("tp1_done")),
+        "r_dist": round(float(p.get("r_dist") or 0), 8),
     })
     return out
 
 
-def _book_view(b: dict, marks: dict[str, dict]) -> dict:
+def _book_view(b: dict, marks: dict[str, dict], with_history: bool = True) -> dict:
     poss = [_mark_pos(p, marks) for p in b.get("positions") or []]
     unreal = sum(p["net"] for p in poss)
     locked = MARGIN * len(poss)
     equity = round(float(b["cash"]) + locked + unreal, 2)
+    raw = b.get("history") or []
+    wins = sum(1 for h in raw if float(h.get("net") or 0) > 0)
+    realized = sum(float(h.get("net") or 0) for h in raw)
     hist = []
-    for h in b.get("history") or []:
-        row = dict(h)
-        if row.get("mins") is None:
-            row["mins"] = _hold_mins(row, str(row.get("closed_iso") or row.get("iso") or ""))
-        if not row.get("closed"):
-            row["closed"] = row.get("t") or ""
-        hist.append(row)
-    wins = sum(1 for h in hist if float(h.get("net") or 0) > 0)
-    realized = sum(float(h.get("net") or 0) for h in hist)
+    if with_history:
+        for h in raw:
+            row = dict(h)
+            if row.get("mins") is None:
+                row["mins"] = _hold_mins(row, str(row.get("closed_iso") or row.get("iso") or ""))
+            if not row.get("closed"):
+                row["closed"] = row.get("t") or ""
+            hist.append(row)
     return {
         "id": b["id"],
         "code": b["code"],
@@ -562,8 +687,8 @@ def _book_view(b: dict, marks: dict[str, dict]) -> dict:
         "fees": round(float(b.get("fees") or 0), 2),
         "open_n": len(poss),
         "wins": wins,
-        "trades": len(hist),
-        "win_pct": round(100.0 * wins / len(hist), 1) if hist else 0.0,
+        "trades": len(raw),
+        "win_pct": round(100.0 * wins / len(raw), 1) if raw else 0.0,
         "positions": poss,
         "history": hist[-80:][::-1],
         "last_signal": b.get("last_signal") or "",
@@ -572,46 +697,78 @@ def _book_view(b: dict, marks: dict[str, dict]) -> dict:
 
 
 def overview() -> dict:
+    global _ov_snap
+    now = time.time()
+    if _ov_snap[1] is not None and now - _ov_snap[0] < 2.5:
+        return _ov_snap[1]
+    marks = _marks()
+    follow = _live_follow_id()
     with _lock:
+        _sync_catalog()
         st = _load()
-        marks = _marks()
-        cards = [_book_view(b, marks) for b in st["algos"].values()]
-        cards.sort(key=lambda x: (-float(x.get("equity") or 0), x["code"]))
-        net = sum(c["net_pnl"] for c in cards)
-        fees = sum(c["fees"] for c in cards)
-        opens = sum(c["open_n"] for c in cards)
-        names = " + ".join(c["code"] for c in cards[:6])
-        if len(cards) > 6:
-            names += " + …"
-        return {
-            "ok": True,
-            "subtitle": (
-                f"{names} → sanal Binance — ${START_CASH:.0f} — "
-                f"${MARGIN:.0f}×{LEV}x — max:{MAX_POS} — "
-                f"{len(cards)} defter — {len(_coin_universe())} coin (Grafik Analiz) — "
-                f"VIP0 taker %0.05 · ATR SL {ATR_SL_MULT}× / trail {ATR_TRAIL_MULT}× · "
-                f"ATRP>%{ATRP_NO_TRADE:.0f} yok — {INTERVAL} — 7/24"
-            ),
-            "coin_n": len(_coin_universe()),
-            "net_pnl": round(net, 2),
-            "fees": round(fees, 2),
-            "open_n": opens,
-            "algos": cards,
-            "pending": st.get("pending") or [],
-            "last_scan": st.get("last_scan") or "",
-        }
+        cards = [_book_view(b, marks, with_history=False) for b in st["algos"].values()]
+        pending = list(st.get("pending") or [])
+        last_scan = st.get("last_scan") or ""
+    cards.sort(key=lambda x: (-float(x.get("equity") or 0), x["code"]))
+    net = sum(c["net_pnl"] for c in cards)
+    fees = sum(c["fees"] for c in cards)
+    opens = sum(c["open_n"] for c in cards)
+    names = " + ".join(c["code"] for c in cards[:6])
+    if len(cards) > 6:
+        names += " + …"
+    row = {
+        "ok": True,
+        "subtitle": (
+            f"{names} → sanal Binance — ${START_CASH:.0f} — "
+            f"${MARGIN:.0f}×{LEV}x — max:{MAX_POS} — "
+            f"{len(cards)} defter — {len(_coin_universe())} coin (Grafik Analiz) — "
+            f"VIP0 taker %0.05 · ATR SL {ATR_SL_MULT}× / kilit {ATR_LOCK_ON}×ATR → {ATR_TRAIL_MULT}× · "
+            f"ATRP>%{ATRP_NO_TRADE:.0f} yok — {INTERVAL} — 7/24"
+        ),
+        "coin_n": len(_coin_universe()),
+        "net_pnl": round(net, 2),
+        "fees": round(fees, 2),
+        "open_n": opens,
+        "algos": cards,
+        "pending": pending,
+        "last_scan": last_scan,
+        "live_follow": follow,
+    }
+    _ov_snap = (now, row)
+    return row
+
+
+def _match_aid(b: dict, key: str) -> bool:
+    k = (key or "").strip().lower().replace(" ", "").replace("#", "")
+    if not k:
+        return False
+    if str(b.get("id") or "").lower().replace("#", "") == k:
+        return True
+    code = str(b.get("code") or "").lower().replace(" ", "").replace("#", "")
+    return k == code
 
 
 def detail(aid: str) -> dict | None:
+    key = str(aid or "").strip()
+    now = time.time()
+    hit = _det_snap.get(key)
+    if hit and now - hit[0] < 2.0:
+        return hit[1]
+    marks = _marks()
     with _lock:
         st = _load()
-        b = st["algos"].get(aid)
+        b = st["algos"].get(key)
+        if not b:
+            b = next((row for row in st["algos"].values() if _match_aid(row, key)), None)
         if not b:
             return None
-        return _book_view(b, _marks())
+        out = _book_view(b, marks)
+    _det_snap[key] = (now, out)
+    return out
 
 
 def toggle(aid: str) -> dict | None:
+    marks = _marks()
     with _lock:
         st = _load()
         b = st["algos"].get(aid)
@@ -619,7 +776,7 @@ def toggle(aid: str) -> dict | None:
             return None
         b["active"] = not b["active"]
         _save()
-        return _book_view(b, _marks())
+        return _book_view(b, marks)
 
 
 def _close_one(b: dict, pos_id: str, marks: dict, reason: str) -> dict | None:
@@ -671,20 +828,23 @@ def _close_one(b: dict, pos_id: str, marks: dict, reason: str) -> dict | None:
     hist.append(rec)
     if len(hist) > 400:
         del hist[:-400]
+    if _follow_close_ok(b, str(hit.get("id") or "")):
+        _live_follow_close(hit.get("symbol"), reason, False, str(hit.get("id") or ""))
     return rec
 
 
 def close_pos(aid: str, pos_id: str, reason: str = "manuel") -> tuple[dict, int]:
+    marks = _marks()
     with _lock:
         st = _load()
         b = st["algos"].get(aid)
         if not b:
             return {"error": "algoritma yok"}, 404
-        rec = _close_one(b, pos_id, _marks(), reason)
+        rec = _close_one(b, pos_id, marks, reason)
         if not rec:
             return {"error": "pozisyon yok"}, 404
         _save()
-        return {"ok": True, "closed": rec, "book": _book_view(b, _marks())}, 200
+        return {"ok": True, "closed": rec, "book": _book_view(b, marks)}, 200
 
 
 def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None) -> dict | None:
@@ -743,6 +903,7 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None) -> dict | N
         "peak": px,
         "trough": px,
         "trail_on": False,
+        "trail_log": [],
         "tp1_done": False,
         "fee_open": fee,
         "funding_acc": 0.0,
@@ -755,6 +916,8 @@ def _open_pos(b: dict, symbol: str, side: str, marks: dict, df=None) -> dict | N
     b["cash"] = round(float(b["cash"]) - MARGIN - fee, 2)
     b["fees"] = round(float(b.get("fees") or 0) + fee, 2)
     b.setdefault("positions", []).append(pos)
+    if _follow_open_ok(b):
+        _live_follow_open(pos, marks, df)
     return pos
 
 
@@ -766,51 +929,63 @@ def _refresh_trail(p: dict, mark: float, df=None) -> None:
         return
     p["atr"] = atr
     entry = float(p["entry"])
-    r = float(p.get("r_dist") or atr * ATR_SL_MULT)
+    need = atr * ATR_LOCK_ON
     if p["side"] == "LONG":
         peak = max(float(p.get("peak") or entry), mark)
         p["peak"] = peak
-        if peak - entry >= r:
+        if peak - entry >= need:
             p["trail_on"] = True
         if p.get("trail_on"):
-            trail = trail_stop("LONG", peak, atr)
-            p["sl"] = max(float(p["sl"]), trail)
+            p["sl"] = max(float(p["sl"]), lock_stop("LONG", entry, peak, atr))
     else:
         trough = min(float(p.get("trough") or entry), mark)
         p["trough"] = trough
-        if entry - trough >= r:
+        if entry - trough >= need:
             p["trail_on"] = True
         if p.get("trail_on"):
-            trail = trail_stop("SHORT", trough, atr)
-            p["sl"] = min(float(p["sl"]), trail)
+            p["sl"] = min(float(p["sl"]), lock_stop("SHORT", entry, trough, atr))
+    if p.get("trail_on"):
+        _note_lock(p)
+
+
+def _note_lock(p: dict) -> None:
+    """Kart için: 1. Stoploss çalıştı +18 dolar"""
+    qty = _qty_of(p)
+    sl = float(p.get("sl") or 0)
+    if qty <= 0 or sl <= 0:
+        return
+    usd = round(_pnl(p["side"], float(p["entry"]), sl, qty), 2)
+    if usd <= 0:
+        return
+    log = p.setdefault("trail_log", [])
+    if not isinstance(log, list):
+        log = []
+        p["trail_log"] = log
+    last = float((log[-1] or {}).get("usd") or 0) if log else 0.0
+    if last and usd < last + 0.5:
+        return
+    log.append({"n": len(log) + 1, "usd": usd})
+    if len(log) > 12:
+        del log[:-12]
 
 
 def _hit_exit(p: dict, mark: float) -> str | None:
+    """Sadece stop / trail / liq. TP1-TP2 kapatmaz — stop kârı kilitler, işlem gider."""
     if mark <= 0:
         return None
     entry = float(p["entry"])
     liq = float(p.get("liq") or _liq_price(p["side"], entry))
     sl = float(p.get("sl") or 0)
-    tp2 = float(p.get("tp") or p.get("tp2") or 0)
-    tp1 = float(p.get("tp1") or 0)
     if p["side"] == "LONG":
         if mark <= liq:
             return "liquidation"
         if sl and mark <= sl:
             return "trailing_stop" if p.get("trail_on") else "stop_loss"
-        if not p.get("tp1_done") and tp1 and mark >= tp1:
-            return "take_profit_1"
-        if tp2 and mark >= tp2:
-            return "take_profit"
     else:
         if mark >= liq:
             return "liquidation"
         if sl and mark >= sl:
             return "trailing_stop" if p.get("trail_on") else "stop_loss"
-        if not p.get("tp1_done") and tp1 and mark <= tp1:
-            return "take_profit_1"
-        if tp2 and mark <= tp2:
-            return "take_profit"
     return None
 
 
@@ -864,6 +1039,8 @@ def _close_partial(b: dict, pos: dict, marks: dict, frac: float, reason: str) ->
     hist.append(rec)
     if len(hist) > 400:
         del hist[:-400]
+    if _follow_close_ok(b, str(pos.get("id") or "")):
+        _live_follow_close(pos.get("symbol"), reason, True, str(pos.get("id") or ""))
     return rec
 
 
@@ -937,7 +1114,7 @@ def _apply_funding(p: dict, info: dict) -> float:
 
 def _prefetch_frames(coins: list[str]) -> dict:
     frames: dict = {}
-    with ThreadPoolExecutor(max_workers=16) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(_klines, s): s for s in coins}
         for fut in as_completed(futs):
             df = None
@@ -958,12 +1135,21 @@ def _eval_hits(b: dict, frames: dict, marks: dict[str, dict]) -> tuple[str, list
         return str(e)[:160], [], last
     hits: list[tuple] = []
     items = list(frames.items())
-    if b.get("id") == "alg_orchestrator":
-        items.sort(key=lambda kv: -float((marks.get(kv[0]) or {}).get("qv") or 0))
-        items = items[:50]
-    for sym, df in items:
+    items.sort(key=lambda kv: -float((marks.get(kv[0]) or {}).get("qv") or 0))
+    held = {p.get("symbol") for p in b.get("positions") or []}
+    cap = 20 if b.get("id") == "alg_orchestrator" else EVAL_COINS
+    picked = [kv for kv in items if kv[0] in held]
+    for kv in items:
+        if kv[0] in held:
+            continue
+        picked.append(kv)
+        if len(picked) >= cap + len(held):
+            break
+    for i, (sym, df) in enumerate(picked):
+        if i and i % 4 == 0:
+            time.sleep(0.001)
         try:
-            res = _call_run(inst, df) or {}
+            res = _call_run(inst, df, sym) or {}
         except Exception:
             continue
         sig = str(res.get("signal") or "")
@@ -983,37 +1169,90 @@ def _eval_hits(b: dict, frames: dict, marks: dict[str, dict]) -> tuple[str, list
     return "", hits, last
 
 
+def _top_coins(marks: dict[str, dict], extra: list[str]) -> list[str]:
+    ranked = sorted(
+        (s for s in _coin_universe(marks) if s),
+        key=lambda s: -float((marks.get(s) or {}).get("qv") or 0),
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in list(extra) + ranked:
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if s not in extra and len([x for x in out if x not in extra]) >= EVAL_COINS:
+            break
+    return out
+
+
+def _take_batch(books: list[dict], pin: list[dict]) -> list[dict]:
+    global _eval_i
+    pins = [b for b in pin if b]
+    pin_ids = {b["id"] for b in pins}
+    rest = [b for b in books if b["id"] not in pin_ids]
+    if not rest:
+        return pins
+    start = _eval_i % len(rest)
+    sl = rest[start:start + EVAL_BATCH]
+    if len(sl) < EVAL_BATCH:
+        sl += rest[: EVAL_BATCH - len(sl)]
+    _eval_i = (start + EVAL_BATCH) % len(rest)
+    seen: set[str] = set()
+    out: list[dict] = []
+    for b in pins + sl:
+        if b["id"] in seen:
+            continue
+        seen.add(b["id"])
+        out.append(b)
+    return out
+
+
 def _scan_once() -> None:
     import pandas as pd  # noqa: F401 — ALG dosyaları pandas ister
     marks = _marks()
     if not marks:
         return
-    coins = _coin_universe(marks)
-    frames = _prefetch_frames(coins)
-
+    follow = _live_follow_id()
+    open_syms: list[str] = []
     with _lock:
+        _sync_catalog()
         st = _load()
-        books = [b for b in st["algos"].values() if b.get("active") and b.get("auto")]
+        auto = [b for b in st["algos"].values() if b.get("active") and b.get("auto")]
         for b in st["algos"].values():
             for p in list(b.get("positions") or []):
+                open_syms.append(str(p.get("symbol") or ""))
                 info = marks.get(p["symbol"]) or {}
                 mk = float(info.get("mark") or info.get("price") or 0)
                 if mk <= 0:
                     continue
                 _apply_funding(p, info)
+                cached = _kline_cache.get(p["symbol"])
+                df = cached[1] if cached else None
                 if p.get("atr") or p.get("r_dist"):
-                    _refresh_trail(p, mk, frames.get(p["symbol"]))
+                    _refresh_trail(p, mk, df)
                 why = _hit_exit(p, mk)
-                if why == "take_profit_1":
-                    _close_partial(b, p, marks, 0.5, why)
-                elif why:
+                if why:
                     _close_one(b, p["id"], marks, why)
         _save()
+        room = [
+            b for b in auto
+            if b.get("id") == follow or len(b.get("positions") or []) < MAX_POS
+        ]
+        pin = [b for b in auto if b.get("id") == follow]
+        batch_ids = [b["id"] for b in _take_batch(room, pin)]
+
+    coins = _top_coins(marks, open_syms)
+    frames = _prefetch_frames(coins)
+    with _lock:
+        st = _load()
+        batch = [st["algos"][i] for i in batch_ids if i in st["algos"]]
 
     scored: list[tuple] = []
-    for b in books:
+    for b in batch:
         err, hits, last = _eval_hits(b, frames, marks)
         scored.append((b["id"], err, hits, last))
+        time.sleep(0.004)
 
     with _lock:
         st = _load()

@@ -6,8 +6,10 @@ Yön vermez; volatiliteye göre stop, hedef ve işlem filtresi üretir.
 from __future__ import annotations
 
 ATR_PERIOD = 14
-ATR_SL_MULT = 1.5       # 5–15m / saatlik
-ATR_TRAIL_MULT = 2.5    # Chandelier, 1R sonra
+ATR_SL_MULT = 1.5       # ilk zarar SL
+ATR_LOCK_ON = 0.5       # kâr ≥ 0.5×ATR → trail_on, stop girişe
+ATR_LOCK_TRAIL = 1.0    # zirveden 1×ATR kâr kilidi
+ATR_TRAIL_MULT = 1.0    # kilit mesafesi (eski 2.5 chandelier kârı kaçırıyordu)
 TP1_R = 1.5
 TP2_R = 2.5
 ATRP_NO_TRADE = 8.0     # üstü işlem yok
@@ -73,3 +75,11 @@ def trail_stop(side: str, extreme: float, atr: float) -> float:
     if side == "LONG":
         return extreme - ATR_TRAIL_MULT * atr
     return extreme + ATR_TRAIL_MULT * atr
+
+
+def lock_stop(side: str, entry: float, extreme: float, atr: float) -> float:
+    """0.5×ATR kârda en az giriş; 1×ATR geriden takip, zarar tarafına inmez."""
+    trail = trail_stop(side, extreme, atr)
+    if side == "LONG":
+        return max(entry, trail)
+    return min(entry, trail)

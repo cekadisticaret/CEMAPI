@@ -937,14 +937,10 @@ def _unrecorded_on_chain(pmh, state: dict, token_id: str) -> bool:
 
 
 def mirror_book_keys(spec: LiveSpec) -> list[str]:
-    """Panelden seçilen kaynak defterler — seçim yoksa spec'teki/kendi defteri."""
-    ctrl = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "coptc_control.json")
+    """API 1. sıradaki kaynak — senkron olmazsa kayıtlı / spec defteri."""
     try:
-        with open(ctrl, encoding="utf-8") as f:
-            data = json.load(f)
-        from coptc_guard import mirror_books_selected
-        picked = mirror_books_selected(data)
+        from coptc_guard import sync_mirror_api_top
+        picked = sync_mirror_api_top()
         if picked:
             return picked
     except Exception:

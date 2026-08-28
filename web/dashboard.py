@@ -81,10 +81,21 @@ def static_ver() -> str:
     return str(int(mt)) if mt else "0"
 
 
+_tpl_mtime = 0.0
+
+
 def _tpl(name: str) -> str:
     """ui_templates.py değişince restart gerekmeden yeni HTML."""
-    import importlib
-    importlib.reload(ui_templates)
+    global _tpl_mtime
+    path = os.path.join(_DIR, "ui_templates.py")
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        mt = 0.0
+    if mt != _tpl_mtime:
+        import importlib
+        importlib.reload(ui_templates)
+        _tpl_mtime = mt
     return getattr(ui_templates, name)
 
 
@@ -527,6 +538,30 @@ def api_v1_algos():
     return resp
 
 
+@app.route("/api/v1/algos/<aid>", methods=["GET", "OPTIONS"])
+def api_v1_algo_one(aid: str):
+    """Tek algo detay + geçmiş — oturum yok, ALG_API_TOKEN."""
+    if request.method == "OPTIONS":
+        resp = app.make_response(("", 204))
+    elif not ALG_API_TOKEN:
+        resp = jsonify({"error": "ALG_API_TOKEN tanımsız"})
+        resp.status_code = 503
+    elif not _algo_public_ok():
+        resp = jsonify({"error": "yetkisiz"})
+        resp.status_code = 401
+    else:
+        row = api.algo_public_one(aid)
+        if not row:
+            resp = jsonify({"error": "algoritma yok"})
+            resp.status_code = 404
+        else:
+            resp = jsonify(row)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Authorization, X-Algo-Token"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    return resp
+
+
 @app.route("/api/v1/live", methods=["GET", "OPTIONS"])
 def api_v1_live():
     """LIVE ekranı — oturum yok, ALG_API_TOKEN gerekir."""
@@ -591,6 +626,15 @@ def api_algo_detail(aid: str):
 @guard
 def api_algo_toggle(aid: str):
     row = api.algo_toggle(aid)
+    if not row:
+        return jsonify({"error": "algoritma yok"}), 404
+    return jsonify(row)
+
+
+@app.route("/api/algo/<aid>/live-follow", methods=["POST"])
+@guard
+def api_algo_live_follow(aid: str):
+    row = api.algo_set_live_follow(aid)
     if not row:
         return jsonify({"error": "algoritma yok"}), 404
     return jsonify(row)

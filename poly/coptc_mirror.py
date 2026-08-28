@@ -75,8 +75,16 @@ def _get(path: str, *, timeout: int = 20) -> dict:
         raise RuntimeError(f"mirror API {e.code}: {body}") from e
 
 
-def book_list() -> list[dict]:
-    return _get("").get("books") or []
+_list_cache: dict = {"at": 0.0, "rows": []}
+
+
+def book_list(*, max_age: float = 25.0) -> list[dict]:
+    now = _time.time()
+    if _list_cache["rows"] and now - _list_cache["at"] < max_age:
+        return _list_cache["rows"]
+    rows = _get("").get("books") or []
+    _list_cache.update({"at": now, "rows": rows})
+    return rows
 
 
 def fetch_book(book: str, *, timeout: int = 20) -> dict:

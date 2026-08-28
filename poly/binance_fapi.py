@@ -94,6 +94,27 @@ def set_leverage(symbol: str, lev: int) -> dict:
     return _signed("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": int(lev)})
 
 
+def max_leverage(symbol: str) -> int:
+    """Sembolün izin verdiği en yüksek kaldıraç. Okunamazsa 0."""
+    try:
+        rows = _signed("GET", "/fapi/v1/leverageBracket", {"symbol": symbol})
+    except Exception:
+        return 0
+    if isinstance(rows, dict):
+        brackets = rows.get("brackets") or []
+    elif isinstance(rows, list) and rows:
+        brackets = (rows[0] or {}).get("brackets") or []
+    else:
+        brackets = []
+    best = 0
+    for b in brackets:
+        try:
+            best = max(best, int(b.get("initialLeverage") or 0))
+        except (TypeError, ValueError):
+            pass
+    return best
+
+
 def set_isolated(symbol: str) -> None:
     try:
         _signed("POST", "/fapi/v1/marginType", {"symbol": symbol, "marginType": "ISOLATED"})
@@ -103,8 +124,47 @@ def set_isolated(symbol: str) -> None:
         raise
 
 
+def _fmt_px(px: float) -> str:
+    s = f"{float(px):.12f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
 def get_order(symbol: str, order_id: str | int) -> dict:
     return _signed("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": int(order_id)})
+
+
+def cancel_order(symbol: str, order_id: str | int) -> dict:
+    """Önce algo STOP, olmazsa klasik emir."""
+    try:
+        return _signed("DELETE", "/fapi/v1/algoOrder", {"symbol": symbol, "algoId": int(order_id)})
+    except Exception:
+        return _signed("DELETE", "/fapi/v1/order", {"symbol": symbol, "orderId": int(order_id)})
+
+
+def stop_market_close(
+    symbol: str,
+    side: str,
+    stop_price: float,
+    *,
+    client_order_id: str = "",
+    working_type: str = "MARK_PRICE",
+    position_side: str | None = None,
+) -> dict:
+    """STOP_MARKET + closePosition — Algo Order API (2025 sonrası zorunlu)."""
+    p = {
+        "algoType": "CONDITIONAL",
+        "symbol": symbol,
+        "side": side,
+        "type": "STOP_MARKET",
+        "triggerPrice": _fmt_px(stop_price),
+        "closePosition": "true",
+        "workingType": working_type,
+    }
+    if client_order_id:
+        p["clientAlgoId"] = client_order_id[:32]
+    if position_side:
+        p["positionSide"] = position_side
+    return _signed("POST", "/fapi/v1/algoOrder", p)
 
 
 def user_trades(symbol: str, limit: int = 50) -> list:

@@ -294,6 +294,11 @@ def mirror_books(*, max_age: float = 25.0) -> dict:
     except Exception as e:
         return {"books": _mirror_cache["rows"], "selected": mirror_book_list(),
                 "cached": bool(_mirror_cache["rows"]), "error": str(e)}
+    try:
+        from coptc_guard import sync_mirror_api_top
+        sync_mirror_api_top(listing)
+    except Exception:
+        pass
 
     def _one(b: dict) -> dict:
         row = {
@@ -1364,36 +1369,66 @@ def algo_live_wallet() -> dict:
     return algo_live.wallet(force=True)
 
 
+def algo_set_live_follow(aid: str) -> dict | None:
+    import algo_paper
+    import algo_live
+    algo_paper.ensure_started()
+    return algo_live.set_follow(str(aid or "").strip())
+
+
+def _algo_public_row(a: dict) -> dict:
+    return {
+        "id": a.get("id"),
+        "code": a.get("code"),
+        "title": a.get("title"),
+        "active": bool(a.get("active")),
+        "auto": bool(a.get("auto")),
+        "equity": a.get("equity"),
+        "net_pnl": a.get("net_pnl"),
+        "unreal": a.get("unreal"),
+        "fees": a.get("fees"),
+        "trades": a.get("trades"),
+        "wins": a.get("wins"),
+        "win_pct": a.get("win_pct"),
+        "open_n": a.get("open_n"),
+        "last_signal": a.get("last_signal") or "",
+        "realized": a.get("realized"),
+        "positions": [
+            {
+                "symbol": p.get("symbol"),
+                "base": p.get("base"),
+                "side": p.get("side"),
+                "entry": p.get("entry"),
+                "mark": p.get("mark"),
+                "net": p.get("net"),
+                "opened": p.get("opened"),
+            }
+            for p in (a.get("positions") or [])
+        ],
+        "history": [
+            {
+                "id": h.get("id"),
+                "symbol": h.get("symbol"),
+                "base": h.get("base"),
+                "side": h.get("side"),
+                "entry": h.get("entry"),
+                "exit": h.get("exit"),
+                "net": h.get("net"),
+                "reason": h.get("reason"),
+                "opened": h.get("opened"),
+                "closed": h.get("closed") or h.get("t"),
+                "mins": h.get("mins"),
+                "commission": h.get("commission"),
+            }
+            for h in (a.get("history") or [])
+        ],
+    }
+
+
 def algo_public_list() -> dict:
-    """Algoritma İşlemler listesi — kartlarla aynı alanlar."""
+    """Algoritma İşlemler listesi — kart + geçmiş."""
     d = algo_overview()
-    rows = []
-    for a in d.get("algos") or []:
-        rows.append({
-            "id": a.get("id"),
-            "code": a.get("code"),
-            "title": a.get("title"),
-            "active": bool(a.get("active")),
-            "auto": bool(a.get("auto")),
-            "equity": a.get("equity"),
-            "net_pnl": a.get("net_pnl"),
-            "unreal": a.get("unreal"),
-            "fees": a.get("fees"),
-            "trades": a.get("trades"),
-            "wins": a.get("wins"),
-            "win_pct": a.get("win_pct"),
-            "open_n": a.get("open_n"),
-            "last_signal": a.get("last_signal") or "",
-            "positions": [
-                {
-                    "symbol": p.get("symbol"),
-                    "base": p.get("base"),
-                    "side": p.get("side"),
-                    "net": p.get("net"),
-                }
-                for p in (a.get("positions") or [])
-            ],
-        })
+    rows = [_algo_public_row(a) for a in d.get("algos") or []]
     rows.sort(key=lambda x: (-float(x.get("equity") or 0), x.get("code") or ""))
     return {
         "ok": True,
@@ -1402,6 +1437,7 @@ def algo_public_list() -> dict:
         "fees": d.get("fees"),
         "open_n": d.get("open_n"),
         "last_scan": d.get("last_scan") or "",
+        "live_follow": d.get("live_follow") or "",
         "algos": rows,
     }
 
@@ -1455,6 +1491,9 @@ def algo_public_live() -> dict:
         "id": d.get("id"),
         "code": d.get("code"),
         "title": d.get("title"),
+        "follow_aid": d.get("follow_aid") or "",
+        "follow_code": d.get("follow_code") or "",
+        "follow_title": d.get("follow_title") or "",
         "live": True,
         "active": bool(d.get("active")),
         "connected": bool(d.get("connected")),
@@ -1478,6 +1517,16 @@ def algo_public_live() -> dict:
         "positions": poss,
         "history": hist,
     }
+
+
+def algo_public_one(aid: str) -> dict | None:
+    """Tek algoritma — kart + geçmiş. id veya A1#25 / a125."""
+    d = algo_detail(aid)
+    if not d:
+        return None
+    row = _algo_public_row(d)
+    row["ok"] = True
+    return row
 
 
 def algo_detail(aid: str) -> dict | None:

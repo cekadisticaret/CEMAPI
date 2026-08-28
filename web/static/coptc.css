@@ -14,7 +14,7 @@
 html,body{height:100%}
 body{
   background:var(--bg);color:var(--tx);
-  font:14px/1.5 "Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   -webkit-font-smoothing:antialiased;
 }
 a{color:inherit;text-decoration:none}
@@ -601,7 +601,22 @@ tr:hover td{background:#1c1c21}
 }
 
 .alg-page{min-height:100vh;background:var(--bg);color:var(--tx)}
-.alg-page .topbar{background:var(--bg);border-bottom-color:var(--line)}
+.alg-page .topbar{background:var(--bg);border-bottom-color:var(--line);flex-wrap:wrap}
+.live-strip{
+  display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;
+  padding:12px 24px;background:#16181f;border-bottom:1px solid var(--line);
+}
+.live-strip[hidden]{display:none}
+.live-strip div{background:var(--card);border-radius:14px;padding:10px 14px}
+.live-strip em{display:block;font-size:10px;font-style:normal;color:var(--mut);letter-spacing:.06em;font-weight:700}
+.live-strip b{display:block;margin-top:2px;font-size:20px;font-variant-numeric:tabular-nums}
+.live-strip #lsUnreal,
+.live-strip #lsUnreal .up,
+.live-strip #lsUnreal .dn{
+  font-size:32px;font-weight:800;line-height:1.1;letter-spacing:-.02em;
+}
+.live-strip #lsUnreal .up{color:var(--lime)}
+.live-strip #lsUnreal .dn{color:#f87171}
 .live-bal{
   display:flex;flex-direction:column;align-items:flex-end;gap:1px;
   padding:7px 14px;border-radius:12px;background:#16301f;
@@ -621,12 +636,13 @@ tr:hover td{background:#1c1c21}
 }
 .alg-card{
   --acc:var(--lime);
-  display:block;position:relative;overflow:hidden;
+  display:block;position:relative;overflow:hidden;cursor:pointer;
   background:var(--card);border:0;border-radius:28px;
   padding:20px 20px 16px;min-height:220px;transition:.2s ease;
   box-shadow:var(--shadow);
   color:var(--tx);
 }
+.alg-card.live-src{box-shadow:0 0 0 2px var(--pink),var(--shadow)}
 .alg-card.acc-lime{--acc:var(--lime)}
 .alg-card.acc-cyan{--acc:var(--cyan)}
 .alg-card.acc-pink{--acc:var(--pink)}
@@ -669,6 +685,13 @@ tr:hover td{background:#1c1c21}
 .alg-metrics{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:14px 0 12px}
 .alg-metrics em{display:block;font-style:normal;font-size:10px;font-weight:700;color:var(--mut)}
 .alg-metrics b{display:block;font-size:13px;font-weight:800;margin-top:2px}
+.alg-metrics .m-pnl b,.alg-metrics .m-now b{
+  font-weight:800;letter-spacing:-.03em;line-height:1.1;margin-top:4px;
+}
+.alg-metrics .m-pnl b{font-size:22px}
+.alg-metrics .m-now b{font-size:18px}
+.alg-metrics .m-pnl .up,.alg-metrics .m-now .up{color:var(--lime)}
+.alg-metrics .m-pnl .dn,.alg-metrics .m-now .dn{color:#f87171}
 .alg-wr{color:var(--acc)}
 .alg-card-foot{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .alg-tag{
@@ -676,6 +699,15 @@ tr:hover td{background:#1c1c21}
   background:rgba(255,255,255,.06);color:var(--mut);
 }
 .alg-tag.on{background:rgba(193,255,114,.16);color:var(--lime)}
+.alg-live-btn{
+  margin-left:auto;padding:5px 10px;border:0;border-radius:999px;cursor:pointer;
+  font-size:10px;font-weight:800;letter-spacing:.04em;
+  background:rgba(255,255,255,.08);color:var(--tx);
+}
+.alg-live-btn:hover{background:rgba(255,255,255,.16)}
+.alg-live-btn.on{background:rgba(255,77,141,.22);color:var(--pink)}
+.alg-card.wr-best .alg-live-btn{background:rgba(17,20,12,.12);color:var(--lime-ink)}
+.alg-card.wr-best .alg-live-btn.on{background:var(--lime-ink);color:var(--lime)}
 .alg-chip{
   padding:4px 9px;border-radius:999px;font-size:10px;font-weight:700;
   background:rgba(255,255,255,.06);color:#d5dae6;
@@ -720,6 +752,11 @@ tr:hover td{background:#1c1c21}
 .ap-net.win span,.ap-net.win strong,.ap-net.win .up{color:#4ade80}
 .ap-net.lose{background:#2d1a1a}
 .ap-net.lose span,.ap-net.lose strong,.ap-net.lose .dn{color:#f87171}
+.ap-atr{
+  margin:0 0 8px;padding:8px 12px;border-radius:12px;
+  font-size:12px;font-weight:800;background:var(--card2);color:var(--mut);
+}
+.ap-atr.on{background:#162a1c;color:#4ade80}
 .ap-mini{font-size:11px;color:var(--mut);margin-top:3px}
 .alg-sum{
   margin:16px 0 10px;padding:12px 16px;border-radius:16px;background:var(--card);

@@ -3,8 +3,6 @@
 PAGE = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }}</title>
 </head><body>
@@ -286,7 +284,7 @@ function render(d){
   $('subtitle').textContent = d.subtitle || '';
 
   $('mdlnote').innerHTML = d.live_on
-    ? `Live açık — yön <b>${d.mirror_short || d.mirror_book || '—'}</b> kaynağından kopyalanır.`
+    ? `Live açık — yön <b>${d.mirror_short || d.mirror_book || '—'}</b> (API 1. sıra) kaynağından kopyalanır.`
     : 'Live kapalı — cron çalışır ama emir gönderilmez.';
   if (d.weekend && d.weekend.enabled && d.weekend.active) {
     $('mdlnote').innerHTML += `<br><span class="b">Hafta sonu duraklama aktif — ${d.weekend.window}</span>`;
@@ -539,8 +537,6 @@ setInterval(loadCons, 60000);
 SETTINGS = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Ayarlar</title>
 </head><body>
@@ -653,9 +649,8 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
             <button class="btn primary" id="msave" disabled>Kaydet</button>
           </div>
           <div id="mlist"><div class="empty">Kaynak listesi yükleniyor…</div></div>
-          <div class="hint" id="mhint">En fazla 3 algoritma seçilebilir; hepsi aynı anda çalışır.
-            Aynı sembolde ikisi de aynı yönü derse her biri için ayrı pozisyon açılır,
-            zıt yön derlerse o sembol atlanır. Öncelik win rate'i yüksek olanda.</div>
+          <div class="hint" id="mhint">Kaynak, API sıralamasının 1. defteridir — Kaydet gerekmez.
+            Sıralama değişince otomatik geçer; açık PM pozisyonlar kapanmaz.</div>
         </div>
 
         <div class="card settings-full">
@@ -738,7 +733,7 @@ function render(d){
   $('lvst').textContent = d.live_on ? src + ' kaynağından live AÇIK' : 'Gerçek para işlemi KAPALI';
   $('lvst').className = 'lvst ' + (d.live_on ? 'g' : 'b');
   $('lvhint').textContent = d.live_on
-    ? 'Her saat :02:00–:09 arası kaynak 4 sn\'de bir okunur, PM emri açılır.'
+    ? 'Kaynak API 1. sıra — sıralama değişince otomatik geçer. :02:00–:09 arası 4 sn poll.'
     : 'Cron çalışır ama emir gönderilmez.';
   $('blive').textContent = d.live_on ? 'Live kapat' : 'Live aç';
   $('blive').className = 'btn ' + (d.live_on ? 'danger' : 'success');
@@ -816,15 +811,17 @@ function setSaved(list){
   if (PICK === null) PICK = MIRROR.slice();
 }
 
-function mrow(b){
+function mrow(b, i){
   const dirs = (b.positions||[]).map(p =>
     `<span class="chip ${p.dir==='UP'?'up':'dn'}">${p.symbol} ${p.dir==='UP'?'↑':'↓'}</span>`).join('');
   const on = pick().includes(b.book);
   const pnlCls = b.pnl == null ? '' : (b.pnl >= 0 ? 'g' : 'b');
+  const mark = i === 0 ? 'API 1' : (on ? 'SEÇİLİ' : '');
   return `<div class="mrow ${on?'on':''}" data-k="${b.book}">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
       <span class="mtick">${on?'✓':''}</span>
-      <span class="nm">${b.short}</span>${on?'<span class="sel">SEÇİLİ</span>':''}
+      <span class="mut" style="font-size:11px;min-width:22px">#${i+1}</span>
+      <span class="nm">${b.short}</span>${mark?'<span class="sel">'+mark+'</span>':''}
       <span class="mut" style="margin-left:auto;font-size:11px">${b.open?b.open+' açık':'açık yok'}</span></div>
     <div style="display:flex;gap:12px;align-items:baseline">
       <span style="font-size:18px;font-weight:800">${money(b.balance)}</span>
@@ -836,7 +833,7 @@ function mrow(b){
 function drawMirror(){
   const q = ($('q').value||'').toLocaleLowerCase('tr');
   const rows = ROWS.filter(b => !q || (b.short||'').toLocaleLowerCase('tr').includes(q) || (b.label||'').toLocaleLowerCase('tr').includes(q));
-  $('mlist').innerHTML = rows.length ? `<div class="mlist">${rows.map(mrow).join('')}</div>` : `<div class="empty">Eşleşen defter yok</div>`;
+  $('mlist').innerHTML = rows.length ? `<div class="mlist">${rows.map((b,i) => mrow(b, ROWS.indexOf(b))).join('')}</div>` : `<div class="empty">Eşleşen defter yok</div>`;
   document.querySelectorAll('.mrow').forEach(el => el.onclick = () => toggle(el.dataset.k));
   const cur = pick(), chg = dirty();
   $('mcount').textContent = cur.length ? `(${cur.length}/${MIRROR_MAX})` : '';
@@ -971,8 +968,6 @@ load(); loadMirror(); loadWd(); setInterval(loadMirror, 60000); setInterval(load
 TRADES = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — İşlemler</title>
 </head><body>
@@ -1457,8 +1452,6 @@ setInterval(loadCons, 60000);
 ANALIZ = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Grafik Analiz</title>
 </head><body>
@@ -1899,8 +1892,6 @@ _ALG_NAV = r"""      <a class="nav-item" href="{{ base }}/">
 ALGOS = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Algoritma İşlemler</title>
 </head><body>
@@ -1967,14 +1958,14 @@ function wrRing(pct){
       stroke-linecap="round" stroke-dasharray="${dash} ${c}" transform="rotate(-90 24 24)"/>
   </svg>`;
 }
-function card(a, best, i){
+function card(a, best, i, liveOn){
   const acc = ['lime','cyan','pink','orange'][i%4];
   const wrn = (a.trades||0) ? Number(a.win_pct||0) : 0;
   const wr = (a.trades||0) ? wrn.toFixed(1)+'%' : '—';
   const chips = (a.positions||[]).map(p =>
     `<span class="alg-chip ${p.side==='LONG'?'up':'dn'}">${p.base} ${p.side}</span>`
   ).join('') || '<span class="alg-chip muted">açık yok</span>';
-  return `<a class="alg-card acc-${acc}${best?' wr-best':''}" href="${BASE}/algoritma/${encodeURIComponent(a.id)}">
+  return `<div class="alg-card acc-${acc}${best?' wr-best':''}${liveOn?' live-src':''}" data-href="${BASE}/algoritma/${encodeURIComponent(a.id)}">
     <div class="alg-card-top">
       <div>
         <div class="alg-kicker">ALGORİTMA</div>
@@ -1992,32 +1983,56 @@ function card(a, best, i){
     </div>
     <div class="alg-bar"><i style="width:${Math.min(100,wrn)}%"></i></div>
     <div class="alg-metrics">
-      <div><em>Net P&L</em><b>${signed(a.net_pnl)}</b></div>
-      <div><em>Anlık</em><b>${signed(a.unreal)}</b></div>
+      <div class="m-pnl"><em>Net P&L</em><b>${signed(a.net_pnl)}</b></div>
+      <div class="m-now"><em>Anlık</em><b>${signed(a.unreal)}</b></div>
       <div><em>WR</em><b class="alg-wr">${wr}</b></div>
     </div>
     <div class="alg-card-foot">
-      <span class="alg-tag ${a.active?'on':''}">${a.active?'LIVE':'OFF'}</span>
+      <span class="alg-tag ${a.active?'on':''}">${a.active?'AÇIK':'OFF'}</span>
+      <button type="button" class="alg-live-btn${liveOn?' on':''}" data-aid="${a.id}" data-code="${a.code}">${liveOn?'LIVE aktif':'Aktif et'}</button>
       ${chips}
     </div>
-  </a>`;
+  </div>`;
 }
+let busy = false;
 async function load(){
-  const r = await fetch(BASE + '/api/algo/overview', {cache:'no-store'});
+  if (busy) return;
+  busy = true;
+  try {
+  const r = await fetch(BASE + '/api/algo/overview', {cache:'no-store', signal: AbortSignal.timeout(8000)});
   if (r.status === 401) return location.href = BASE + '/giris';
+  if (!r.ok) return;
   const d = await r.json();
   $('sub').textContent = d.subtitle || '';
   $('topstat').innerHTML = `Net P&L ${signed(d.net_pnl)} · kom. ${signed(-Math.abs(d.fees||0))} · Açık: ${d.open_n||0}`;
   const rows = (d.algos||[]).slice().sort((a,b)=> (b.equity||0)-(a.equity||0));
   const top = bestWrId(rows);
-  $('grid').innerHTML = rows.map((a,i) => card(a, a.id===top, i)).join('') || '<div class="mut">ALG klasörü boş</div>';
+  const follow = d.live_follow || '';
+  $('grid').innerHTML = rows.map((a,i) => card(a, a.id===top, i, a.id===follow)).join('') || '<div class="mut">ALG klasörü boş</div>';
   const pend = d.pending||[];
   $('pendHd').textContent = 'İŞLEM BEKLEYEN — ' + pend.length + ' SİNYAL — ' + (d.coin_n||0) + ' COİN (Grafik Analiz)';
-  $('pend').innerHTML = pend.map(p => `<div class="alg-pend-row">
+    $('pend').innerHTML = pend.map(p => `<div class="alg-pend-row">
     <b>${p.base}</b>
     <span class="mut">${p.note||''}</span>
     <span class="alg-dir ${p.side==='LONG'?'up':'dn'}">${p.side==='LONG'?'çıkar':'düşer'}</span>
   </div>`).join('') || '<div class="mut" style="padding:10px">Tarama bekleniyor…</div>';
+  } catch (e) {}
+  finally { busy = false; }
+}
+$('grid').onclick = e => {
+  const btn = e.target.closest('.alg-live-btn');
+  if (btn) { e.preventDefault(); e.stopPropagation(); setLiveFollow(btn); return; }
+  const cardEl = e.target.closest('.alg-card[data-href]');
+  if (cardEl) location.href = cardEl.dataset.href;
+};
+async function setLiveFollow(btn){
+  if (btn.classList.contains('on')) return;
+  const code = btn.dataset.code || btn.dataset.aid;
+  if (!confirm(`LIVE bundan sonra ${code} sanal defterini kopyalayacak.\n\nAçık LIVE pozisyonlar kapanmaz. Yeni açılışlar bu algoritmadan gider.`)) return;
+  const r = await fetch(BASE + '/api/algo/' + encodeURIComponent(btn.dataset.aid) + '/live-follow', {method:'POST'});
+  if (r.status === 401) return location.href = BASE + '/giris';
+  if (!r.ok) { alert('Aktif edilemedi'); return; }
+  load();
 }
 $('mDash').onclick = () => location.href = BASE + '/';
 $('mDesk').onclick = () => location.href = BASE + '/islemler';
@@ -2029,8 +2044,6 @@ setInterval(load, 8000);
 ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }} — Algoritma</title>
 </head><body>
@@ -2042,7 +2055,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
     </div>
     <nav class="nav">""" + _ALG_NAV + r"""
     </nav>
-    <div class="sidebar-foot">{% if live_mode %}<b>Gerçek Binance</b>$30 × 10x · Squeeze Momentum — sanal defter ayrı.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
+    <div class="sidebar-foot">{% if live_mode %}<b>Gerçek Binance</b>$60 × 15x · seçilen sanal algoritmanın kopyası.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
   </aside>
   <div class="main alg-page">
     <header class="topbar">
@@ -2057,6 +2070,12 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
         <button class="btn" id="btog">—</button>
       </div>
     </header>
+    <div class="live-strip" id="liveStrip" hidden>
+      <div><em>Cüzdan</em><b id="lsWallet">—</b></div>
+      <div><em>Serbest</em><b id="lsAvail">—</b></div>
+      <div><em>Anlık</em><b id="lsUnreal">—</b></div>
+      <div><em>Kilitli</em><b id="lsLock">—</b></div>
+    </div>
     <div class="alg-detail">
       <div class="alg-sec-hd">AÇIK POZİSYONLAR</div>
       <div class="ap-grid" id="opens"></div>
@@ -2084,11 +2103,25 @@ function posMove(p){
   if (p.side === 'SHORT') r = -r;
   return r;
 }
+function lockNote(p){
+  const rows = Array.isArray(p.trail_log) ? p.trail_log : [];
+  const usd = n => {
+    const v = Math.round(Number(n||0));
+    return (v>=0?'+':'') + v + ' dolar';
+  };
+  if (rows.length) {
+    return rows.map((x,i) => `${i+1}. Stoploss çalıştı ${usd(x.usd)}`).join('<br>');
+  }
+  const lock = Number(p.sl_usd||0);
+  if (p.trail_on && lock>0) return '1. Stoploss çalıştı ' + usd(lock);
+  return 'Stoploss henüz çalışmadı';
+}
 function posCard(p){
   const net = Number(p.net||0);
   const mv = posMove(p);
   const tag = net>0?'KÂR':net<0?'ZARAR':'NÖTR';
   const dirCls = p.side === 'LONG' ? 'dir-up' : (p.side === 'SHORT' ? 'dir-dn' : '');
+  const atrNote = lockNote(p);
   return `<div class="ap-card ${dirCls} ${net>0?'is-win':net<0?'is-lose':''}">
     <div class="ap-hd">
       <div><b>${p.base}</b> <span class="alg-dir ${p.side==='LONG'?'up':'dn'}">${p.side}</span></div>
@@ -2100,10 +2133,9 @@ function posCard(p){
       <span>${tag}</span>
       <strong>${signed(net)}</strong>
     </div>
+    <div class="ap-atr ${p.trail_on?'on':''}">${atrNote}</div>
     <div class="ap-mini">Brüt ${signed(p.gross)} · Komisyon −$${Number(p.commission).toFixed(2)} · Funding ${signed(p.funding||0)} · Net ${signed(p.net)} · marj ${p.pct>=0?'+':''}${Number(p.pct).toFixed(1)}%</div>
-    <div class="ap-mini">Kar al $${Number(p.tp).toPrecision(6)} (${signed(p.tp_usd)}) · Zarar durdur $${Number(p.sl).toPrecision(6)} (${signed(p.sl_usd)}) · Liq $${Number(p.liq||0).toPrecision(6)}</div>
-    <div class="ap-mini">ATR ${p.atr?Number(p.atr).toPrecision(5):'—'} · ATRP %${p.atrp??'—'} · SL 1.5×ATR · ${p.trail_on?'trail açık 2.5×':'trail 1R sonra'} · ${p.tp1_done?'TP1 alındı · TP2':'TP1 1.5R / TP2 2.5R'}</div>
-    <div class="ap-mini">STR: ${p.lev||10}x · ${p.side.toLowerCase()} · ${LIVE?'Binance Futures gerçek':'taker VIP0 · mark'} · ${p.fill||'bid/ask'}</div>
+    <div class="ap-mini">${LIVE?'Gerçek Binance':'Sanal'} · ${p.mins!=null?p.mins+' dk':''}</div>
   </div>`;
 }
 function holdTxt(m){
@@ -2124,18 +2156,36 @@ function row(h){
     <strong class="ap-pnl">${signed(h.net)}</strong>
   </div>`;
 }
+let busy = false;
 async function load(){
-  const r = await fetch(API, {cache:'no-store'});
+  if (busy) return;
+  busy = true;
+  try {
+  const r = await fetch(API, {cache:'no-store', signal: AbortSignal.timeout(10000)});
   if (r.status === 401) return location.href = BASE + '/giris';
-  if (!r.ok) { $('ttl').textContent = 'Bulunamadı'; return; }
+  if (!r.ok) return;
   const a = await r.json();
   $('ttl').textContent = LIVE ? 'LIVE' : a.code;
-  const sz = LIVE ? '$30×10x' : '$100x10';
-  $('sub').textContent = `${a.title} — Win % ${a.win_pct} — ${a.trades} işlem — ${sz} — max: 6${a.error?' — '+a.error:''}`;
+  const src = LIVE ? ((a.follow_code || a.title || '') + ' kopyası') : a.title;
+  const sz = LIVE ? '$60×15x · sanal kopya' : '$100x10';
+  $('sub').textContent = `${src} — Win % ${a.win_pct} — ${a.trades} işlem — ${sz} — max: 6${a.error?' — '+a.error:''}`;
   if (LIVE && $('liveUsdt')) {
     $('liveUsdt').textContent = '$' + Number(a.wallet||0).toFixed(2);
     $('liveAvail').textContent = 'serbest $' + Number(a.available||0).toFixed(2);
     $('liveBal').classList.toggle('off', !a.connected);
+  }
+  if ($('liveStrip')) {
+    $('liveStrip').hidden = false;
+    const wallet = LIVE ? Number(a.wallet||0) : Number(a.equity||0);
+    const avail = LIVE ? Number(a.available||0) : Number(a.cash_free||0);
+    const unreal = Number(a.unreal||0);
+    $('lsWallet').textContent = '$' + wallet.toFixed(2);
+    $('lsAvail').textContent = '$' + avail.toFixed(2);
+    $('lsUnreal').innerHTML = signed(unreal);
+    const lock = LIVE
+      ? Math.max(0, wallet - avail)
+      : Math.max(0, wallet - avail - unreal);
+    $('lsLock').textContent = '$' + lock.toFixed(2);
   }
   $('topstat').innerHTML = LIVE
     ? `Cüzdan: ${Number(a.wallet||0).toFixed(2)} | Anlık: ${signed(a.unreal)} | ${a.connected?'bağlı':'kopuk'}`
@@ -2157,6 +2207,8 @@ async function load(){
       load();
     };
   });
+  } catch (e) {}
+  finally { busy = false; }
 }
 $('btog').onclick = async () => {
   await fetch(API + '/toggle', {method:'POST'});
@@ -2169,8 +2221,6 @@ setInterval(load, 6000);
 LOGIN = r"""<!doctype html><html lang="tr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
 <title>{{ app_name }}</title></head>
 <body class="login-page">

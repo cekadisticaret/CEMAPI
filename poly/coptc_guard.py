@@ -210,6 +210,33 @@ def set_mirror_books(books, *, source: str = "") -> list[str]:
     return clean
 
 
+def sync_mirror_api_top(listing=None) -> list[str]:
+    """Bursa API sıralamasının 1. defterini tek kaynak yap.
+
+    Sıralama değişince bir sonraki senkron yeni 1. sıraya geçer.
+    Liste okunamazsa mevcut seçim durur.
+    """
+    rows = listing
+    if rows is None:
+        try:
+            import coptc_mirror as ms
+            rows = ms.book_list()
+        except Exception:
+            return mirror_books_selected()
+    top = ""
+    for b in rows or []:
+        k = str((b or {}).get("book") or "").strip()
+        if k:
+            top = k
+            break
+    if not top:
+        return mirror_books_selected()
+    cur = mirror_books_selected()
+    if cur == [top]:
+        return cur
+    return set_mirror_books([top], source="api-rank-1")
+
+
 def get_coptc_control() -> dict:
     return _load_control()
 
