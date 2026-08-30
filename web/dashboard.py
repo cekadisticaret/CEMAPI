@@ -169,6 +169,11 @@ def _algo_public_ok() -> bool:
     return secrets.compare_digest(got, ALG_API_TOKEN)
 
 
+from bahis_routes import register_bahis  # noqa: E402
+
+register_bahis(app, guard, URL_PREFIX, _url)
+
+
 # ── sayfa şablonları → ui_templates.py ───────────────────────────
 
 
@@ -305,6 +310,12 @@ def algo_detail_page(aid: str):
     except Exception:
         boot = {"ok": False}
     return _render("ALGO_ONE", book=api.active_book(), aid=aid, boot=boot)
+
+
+@app.route("/bahis")
+@guard
+def bahis_page():
+    return _render("BAHIS", nav_on="bahis")
 
 
 @app.route("/live")

@@ -1,0 +1,116 @@
+{
+  "ok": true,
+  "league": "Brasileirão",
+  "league_id": "bra",
+  "updated": "2026-08-30T01:40:42+03:00",
+  "n_matches": 4223,
+  "n_odds": 0,
+  "elo": {
+    "model": "elo-wf",
+    "n": 4223,
+    "hits": 2081,
+    "wr": 49.3,
+    "brier": 0.6167,
+    "logloss": 1.0297,
+    "naive_score": 0.493,
+    "naive_note": "oran yok · isabet≠kâr",
+    "value_n": 0,
+    "value_pnl": 0,
+    "value_staked": 0,
+    "value_roi": null,
+    "min_edge": 0.04,
+    "bins": [
+      {
+        "bin": "0.3-0.4",
+        "n": 886,
+        "pred": 0.37,
+        "actual": 0.376
+      },
+      {
+        "bin": "0.4-0.5",
+        "n": 1765,
+        "pred": 0.45,
+        "actual": 0.454
+      },
+      {
+        "bin": "0.5-0.6",
+        "n": 1123,
+        "pred": 0.542,
+        "actual": 0.579
+      },
+      {
+        "bin": "0.6-0.7",
+        "n": 426,
+        "pred": 0.634,
+        "actual": 0.65
+      },
+      {
+        "bin": "0.7-0.8",
+        "n": 23,
+        "pred": 0.717,
+        "actual": 0.826
+      }
+    ]
+  },
+  "dixon": {
+    "model": "dixon-season-wf",
+    "n": 3844,
+    "hits": 1842,
+    "wr": 47.9,
+    "brier": 0.6287,
+    "logloss": 1.0459,
+    "naive_score": 0.479,
+    "naive_note": "oran yok · isabet≠kâr",
+    "value_n": 0,
+    "value_pnl": 0,
+    "value_staked": 0,
+    "value_roi": null,
+    "min_edge": 0.04,
+    "bins": [
+      {
+        "bin": "0.3-0.4",
+        "n": 727,
+        "pred": 0.378,
+        "actual": 0.391
+      },
+      {
+        "bin": "0.4-0.5",
+        "n": 1593,
+        "pred": 0.448,
+        "actual": 0.438
+      },
+      {
+        "bin": "0.5-0.6",
+        "n": 919,
+        "pred": 0.543,
+        "actual": 0.546
+      },
+      {
+        "bin": "0.6-0.7",
+        "n": 431,
+        "pred": 0.641,
+        "actual": 0.568
+      },
+      {
+        "bin": "0.7-0.8",
+        "n": 144,
+        "pred": 0.736,
+        "actual": 0.667
+      },
+      {
+        "bin": "0.8-0.9",
+        "n": 28,
+        "pred": 0.833,
+        "actual": 0.571
+      },
+      {
+        "bin": "0.9-1.0",
+        "n": 2,
+        "pred": 0.923,
+        "actual": 0.5
+      }
+    ]
+  },
+  "note": "walk-forward · ELO maç-maç · DC sezon penceresi · P&L açılış oranı · isabet≠kâr · emir yok",
+  "orders": false
+}

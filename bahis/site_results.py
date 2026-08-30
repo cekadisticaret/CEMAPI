@@ -1,0 +1,110 @@
+""" /site/biten — bitmiş maçlar + tahmin isabeti. Emir yok. """
+
+SITE_RESULTS_HTML = r"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bitmiş maçlar · MATCHDAY</title>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Oswald:wght@500;700&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#080c14;--card:#101826;--line:rgba(245,197,24,.28);--y:#F5C518;--ink:#111;--txt:#fff;--muted:#9aa3b2;--ok:#22c55e;--no:#ef4444}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-family:Inter,system-ui,sans-serif}
+a{color:inherit;text-decoration:none}
+__SITE_NAV_CSS__
+.lgbar{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.lgchip{border:1px solid var(--line);background:var(--card);color:#e8e8e8;border-radius:999px;padding:6px 10px;font:700 11px Oswald,sans-serif;cursor:pointer}
+.lgchip.on{background:var(--y);color:var(--ink)}
+.wrap{max-width:900px;margin:0 auto;padding:22px 18px 56px}
+h1{font:italic 800 36px/1 Anton,sans-serif;color:var(--y);margin:8px 0 6px}
+.note{font-size:13px;color:var(--muted);margin-bottom:16px}
+.stat{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.stat b{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;font:700 13px Oswald,sans-serif}
+.card{display:block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:10px}
+.card:hover{border-color:var(--y)}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.sc{font:italic 800 22px Anton,sans-serif;color:var(--y);min-width:72px}
+.nm{font:700 14px Oswald,sans-serif}
+.sub{font-size:12px;color:var(--muted);margin-top:2px}
+.hit{margin-left:auto;font:800 11px Oswald,sans-serif;letter-spacing:.08em;border-radius:99px;padding:6px 10px}
+.hit.ok{background:#12351f;color:var(--ok)}
+.hit.no{background:#3a1218;color:var(--no)}
+.hit.wait{background:#1a1608;color:var(--y)}
+@media(max-width:640px){h1{font-size:26px}.sc{min-width:56px;font-size:18px}}
+</style>
+</head>
+<body>
+__SITE_NAV__
+<div class="wrap">
+  <h1>BİTMİŞ MAÇLAR</h1>
+  <div class="lgbar" id="lgbar"></div>
+  <div class="note" id="meta">yükleniyor…</div>
+  <div class="stat" id="stat"></div>
+  <div id="list"></div>
+</div>
+<script>
+function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));}
+function when(k){
+  if(!k) return '';
+  try{
+    const d=new Date(k);
+    if(isNaN(d.getTime())) return k;
+    return d.toLocaleString('tr-TR',{timeZone:'Europe/Istanbul',day:'2-digit',month:'2-digit',year:'numeric',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false});
+  }catch(e){ return k; }
+}
+function badge(m){
+  if(m.hit===true) return '<span class="hit ok">TUTTU</span>';
+  if(m.hit===false) return '<span class="hit no">TUTMADI</span>';
+  return '<span class="hit wait">TAHMİN YOK</span>';
+}
+let LEAGUE = new URLSearchParams(location.search).get('league') || 'tr';
+function withLg(url){
+  const join = url.includes('?') ? '&' : '?';
+  return url + join + 'league=' + encodeURIComponent(LEAGUE);
+}
+async function load(){
+  const d = await (await fetch(withLg('/site/api/finished'),{cache:'no-store'})).json();
+  const bar=document.getElementById('lgbar');
+  if(bar && d.league){
+    const list = await (await fetch('/site/api/leagues',{cache:'no-store'})).json();
+    bar.innerHTML = ((list.leagues)||[]).map(x=>
+      `<button class="lgchip${x.id===LEAGUE?' on':''}" type="button" data-id="${esc(x.id)}">${esc(x.flag)} ${esc(x.short)}</button>`
+    ).join('');
+  }
+  document.getElementById('meta').textContent =
+    (d.note||'') + (d.updated?(' · güncelleme '+when(d.updated)):'') + (d.src&&d.src.length?(' · '+d.src.join(' + ')):'');
+  const cl=d.clv||{};
+  document.getElementById('stat').innerHTML =
+    `<b>${d.n||0} MAÇ</b><b>İSABET ${d.hits||0}/${d.graded_n||0}</b><b>WR ${d.wr==null?'—':('%'+d.wr)}</b>` +
+    (cl.n?`<b>CLV ${cl.beat_pct}% · n ${cl.n}</b>`:'');
+  const rows = d.matches||[];
+  document.getElementById('list').innerHTML = rows.map(m=>{
+    const h=m.home||{}, a=m.away||{};
+    const pred = m.pick==='1'?(h.short||h.name): m.pick==='2'?(a.short||a.name): 'X';
+    const act = m.result==='1'?(h.short||'1'): m.result==='2'?(a.short||'2'): (m.result||'—');
+    return `<a class="card" href="/site/mac/${encodeURIComponent(m.id)}">
+      <div class="row">
+        <div class="sc">${m.hg??'—'}–${m.ag??'—'}</div>
+        <div>
+          <div class="nm">${esc(h.name||m.home_name)} — ${esc(a.name||m.away_name)}</div>
+          <div class="sub">${when(m.kickoff)}${m.week?(' · H'+m.week):''} · tahmin ${esc(pred)} · sonuç ${esc(act)}${m.clv?(' · CLV '+(m.clv.beat?'+':'')+((m.clv.clv||0)*100).toFixed(1)+'p'):''}</div>
+        </div>
+        ${badge(m)}
+      </div>
+    </a>`;
+  }).join('') || '<div class="note">Henüz bitmiş maç yok — cron sonuçları çekince dolacak.</div>';
+}
+document.getElementById('lgbar').addEventListener('click', e=>{
+  const b=e.target.closest('.lgchip'); if(!b) return;
+  LEAGUE = b.dataset.id || 'tr';
+  const u=new URL(location.href);
+  u.searchParams.set('league', LEAGUE);
+  history.replaceState(null,'',u);
+  load();
+});
+load();
+</script>
+</body>
+</html>
+"""

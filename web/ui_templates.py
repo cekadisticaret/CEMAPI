@@ -13,7 +13,7 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
       <div><div class="brand-name">CemAPI</div><div class="brand-sub">Live Control</div></div>
     </div>
     <nav class="nav">
-      <a class="nav-item on" href="{{ base }}/">
+      <a class="nav-item{% if nav_on!='bahis' %} on{% endif %}" href="{{ base }}/">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
         Dashboard
       </a>
@@ -29,6 +29,10 @@ PAGE = r"""<!doctype html><html lang="tr"><head>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
         LIVE
         <span class="nav-live-dot"></span>
+      </a>
+      <a class="nav-item{% if nav_on=='bahis' %} on{% endif %}" href="{{ base }}/bahis">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M8 6V4h8v2"/></svg>
+        Bahis
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -583,6 +587,10 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
         LIVE
         <span class="nav-live-dot"></span>
       </a>
+      <a class="nav-item{% if nav_on=='bahis' %} on{% endif %}" href="{{ base }}/bahis">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M8 6V4h8v2"/></svg>
+        Bahis
+      </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
         Grafik Analiz
@@ -668,8 +676,8 @@ SETTINGS = r"""<!doctype html><html lang="tr"><head>
             <button class="btn primary" id="msave" disabled>Kaydet</button>
           </div>
           <div id="mlist"><div class="empty">Kaynak listesi yükleniyor…</div></div>
-          <div class="hint" id="mhint">Kaynak, API sıralamasının 1. defteridir — Kaydet gerekmez.
-            Sıralama değişince otomatik geçer; açık PM pozisyonlar kapanmaz.</div>
+          <div class="hint" id="mhint">Otomatik API seçimi kapalı. Listeden işaretle, Kaydet’e bas.
+            Açık PM pozisyonlar kapanmaz.</div>
         </div>
 
         <div class="card settings-full">
@@ -752,7 +760,7 @@ function render(d){
   $('lvst').textContent = d.live_on ? src + ' kaynağından live AÇIK' : 'Gerçek para işlemi KAPALI';
   $('lvst').className = 'lvst ' + (d.live_on ? 'g' : 'b');
   $('lvhint').textContent = d.live_on
-    ? 'Kaynak API 1. sıra — sıralama değişince otomatik geçer. :02:00–:09 arası 4 sn poll.'
+    ? 'Kaynak elle seçilir. :02:00–:09 arası 4 sn poll.'
     : 'Cron çalışır ama emir gönderilmez.';
   $('blive').textContent = d.live_on ? 'Live kapat' : 'Live aç';
   $('blive').className = 'btn ' + (d.live_on ? 'danger' : 'success');
@@ -1032,6 +1040,10 @@ TRADES = r"""<!doctype html><html lang="tr"><head>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 5a10 10 0 0 1 14 0M3 3a13 13 0 0 1 18 0M8.5 8.5a5 5 0 0 1 7 0"/></svg>
         LIVE
         <span class="nav-live-dot"></span>
+      </a>
+      <a class="nav-item{% if nav_on=='bahis' %} on{% endif %}" href="{{ base }}/bahis">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M8 6V4h8v2"/></svg>
+        Bahis
       </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
@@ -1543,6 +1555,10 @@ ANALIZ = r"""<!doctype html><html lang="tr"><head>
         LIVE
         <span class="nav-live-dot"></span>
       </a>
+      <a class="nav-item{% if nav_on=='bahis' %} on{% endif %}" href="{{ base }}/bahis">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M8 6V4h8v2"/></svg>
+        Bahis
+      </a>
       <a class="nav-item on" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
         Grafik Analiz
@@ -1944,6 +1960,10 @@ _ALG_NAV = r"""      <a class="nav-item" href="{{ base }}/">
         LIVE
         <span class="nav-live-dot"></span>
       </a>
+      <a class="nav-item{% if nav_on=='bahis' %} on{% endif %}" href="{{ base }}/bahis">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M8 6V4h8v2"/></svg>
+        Bahis
+      </a>
       <a class="nav-item" href="{{ base }}/grafik-analiz">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/></svg>
         Grafik Analiz
@@ -2205,7 +2225,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
     </div>
     <nav class="nav">""" + _ALG_NAV + r"""
     </nav>
-    <div class="sidebar-foot">{% if live_mode %}<b>Gerçek Binance</b>$50 × 15x · kâr WR≥60 → $60 × 20x.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
+    <div class="sidebar-foot">{% if live_mode %}<b>LIVE $500</b>Binance bağlı · $60 × 15x · kâr WR≥60 → $100 × 15x.{% else %}<b>Sanal Binance</b>Pozisyon $100 × 10x. Kapat = kâğıt kapanış.{% endif %}</div>
   </aside>
   <div class="main alg-page">
     <header class="topbar">
@@ -2221,7 +2241,7 @@ ALGO_ONE = r"""<!doctype html><html lang="tr"><head>
       </div>
     </header>
     <div class="live-strip" id="liveStrip" hidden>
-      <div><em>Cüzdan</em><b id="lsWallet">—</b></div>
+      <div><em>Sanal $500</em><b id="lsWallet">—</b></div>
       <div><em>Serbest</em><b id="lsAvail">—</b></div>
       <div><em>Anlık</em><b id="lsUnreal">—</b></div>
       <div><em>Kilitli</em><b id="lsLock">—</b></div>
@@ -2265,6 +2285,7 @@ function lockNote(p){
   }
   const lock = Number(p.sl_usd||0);
   if (p.trail_on && lock>0) return '1. Stoploss çalıştı ' + usd(lock);
+  if (p.trail_on) return 'Stoploss girişe kilitlendi';
   return 'Stoploss henüz çalışmadı';
 }
 function posCard(p){
@@ -2286,7 +2307,7 @@ function posCard(p){
     </div>
     <div class="ap-atr ${p.trail_on?'on':''}">${atrNote}</div>
     <div class="ap-mini">Brüt ${signed(p.gross)} · Komisyon −$${Number(p.commission).toFixed(2)} · Funding ${signed(p.funding||0)} · Net ${signed(p.net)} · marj ${p.pct>=0?'+':''}${Number(p.pct).toFixed(1)}%</div>
-    <div class="ap-mini">${LIVE?'Gerçek Binance':'Sanal'} · ${p.mins!=null?p.mins+' dk':''}</div>
+    <div class="ap-mini">${LIVE?'Sanal $500 · Binance fiyat':'Sanal'} · ${p.mins!=null?p.mins+' dk':''}</div>
   </div>`;
 }
 function holdTxt(m){
@@ -2314,15 +2335,15 @@ function paint(a) {
   try {
   $('ttl').textContent = LIVE ? 'LIVE' : a.code;
   const src = LIVE ? ((a.follow_code || a.title || '') + ' kopyası') : a.title;
-  const m = Number(a.margin || (LIVE ? 50 : 100));
+  const m = Number(a.margin || (LIVE ? 60 : 100));
   const lv = Number(a.lev || (LIVE ? 15 : 10));
   const sz = LIVE
-    ? `$${m.toFixed(0)}×${lv}x · kâr WR≥${Number(a.boost_wr||60)} → $${Number(a.boost_margin||60)}×${Number(a.boost_lev||20)}x`
+    ? `$${m.toFixed(0)}×${lv}x · kâr WR≥${Number(a.boost_wr||60)} → $${Number(a.boost_margin||100)}×${Number(a.boost_lev||15)}x`
     : `$${m.toFixed(0)}x${lv}`;
   $('sub').textContent = `${src} — Win % ${a.win_pct} — ${a.trades} işlem — ${sz} — max: 6${a.error?' — '+a.error:''}`;
   if (LIVE && $('liveUsdt')) {
-    $('liveUsdt').textContent = '$' + Number(a.wallet||0).toFixed(2);
-    $('liveAvail').textContent = 'serbest $' + Number(a.available||0).toFixed(2);
+    $('liveUsdt').textContent = '$' + Number(a.bn_wallet||0).toFixed(2);
+    $('liveAvail').textContent = 'serbest $' + Number(a.bn_available||0).toFixed(2);
     $('liveBal').classList.toggle('off', !a.connected);
   }
   if ($('liveStrip')) {
@@ -2334,12 +2355,12 @@ function paint(a) {
     $('lsAvail').textContent = '$' + avail.toFixed(2);
     $('lsUnreal').innerHTML = signed(unreal);
     const lock = LIVE
-      ? Math.max(0, wallet - avail)
+      ? Math.max(0, wallet - avail - unreal)
       : Math.max(0, wallet - avail - unreal);
     $('lsLock').textContent = '$' + lock.toFixed(2);
   }
   $('topstat').innerHTML = LIVE
-    ? `Cüzdan: ${Number(a.wallet||0).toFixed(2)} | Anlık: ${signed(a.unreal)} | ${a.connected?'bağlı':'kopuk'}`
+    ? `Sanal $500: ${Number(a.wallet||0).toFixed(2)} | Anlık: ${signed(a.unreal)} | Binance ${a.connected?'bağlı':'kopuk'}`
     : `Bakiye: ${a.equity.toFixed(2)} | Net PNL: ${signed(a.net_pnl)} | Anlık Net: ${signed(a.unreal)} | Kom: −$${a.fees.toFixed(2)}`;
   $('btog').textContent = a.active ? 'Durdur' : 'Başlat';
   const opens = a.positions||[];
@@ -2426,3 +2447,22 @@ LOGIN = r"""<!doctype html><html lang="tr"><head>
   <button type="submit">Giriş</button>
   {% if err %}<div class="werr" style="text-align:center;margin-top:8px">Hatalı parola</div>{% endif %}
 </form></body></html>"""
+
+BAHIS = r"""<!doctype html><html lang="tr"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="{{ base }}/favicon.ico" type="image/svg+xml">
+<link rel="stylesheet" href="{{ base }}/static/coptc.css?v={{ static_ver }}">
+<title>Bahis · {{ app_name }}</title>
+<style>
+.app.bahis-full{min-height:100vh}
+.bahis-main{flex:1;min-width:0;display:flex;flex-direction:column;background:#0c0f12;height:100vh}
+.bahis-frame{flex:1;width:100%;border:0;min-height:0;background:#101318}
+.bahis-top{display:none}
+</style>
+</head><body>
+<div class="app bahis-full">
+  <div class="main bahis-main">
+    <iframe class="bahis-frame" name="bahisapp" src="{{ base }}/bahis/app" title="Bahis"></iframe>
+  </div>
+</div>
+</body></html>"""
